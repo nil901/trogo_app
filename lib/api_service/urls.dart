@@ -7,10 +7,7 @@ String history = '${baseUrl}passenger/history';
 String banarUrl = '${baseUrl}passenger/banners';
 String fareEstimateUrl = '${baseUrl}passenger/fare-estimate';
 String profileGet = '${baseUrl}auth/profile';
-
-
-
-
+String transportVehicleGet = '${baseUrl}passenger/suggestions';
 
 
 

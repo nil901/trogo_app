@@ -421,12 +421,13 @@ final vihicletypeProvider = StateProvider<List<VehicleType>>((ref) => []);
 
 final transdportVihicletypeProvider = StateProvider<List<TransportVehicle>>((ref) => []);
 
+
 Future<List<TransportVehicle>> transportVehicletypesApi(WidgetRef ref) async {
   try {
-    final response = await ApiService().getRequest(vehicletypes);
+    final response = await ApiService().getRequest(transportVehicleGet);
 
     if (response != null && response.statusCode == 200) {
-      final data = response.data['vehicleTypes'] as List;
+      final data = response.data['vehicles'] as List;
       final bannar = data.map((json) => TransportVehicle.fromJson(json)).toList();
       ref.read(transdportVihicletypeProvider.notifier).state = bannar;
       return bannar;

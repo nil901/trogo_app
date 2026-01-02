@@ -1,345 +1,986 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:geocoding/geocoding.dart';
-import 'package:geolocator/geolocator.dart';
-import 'package:http/http.dart' as http;
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:intl/intl.dart';
-import 'package:trogo_app/goods_details_page.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:geocoding/geocoding.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'dart:async';
 
-class ScheduleDeliveryPage extends StatefulWidget {
+import 'package:trogo_app/auth/login_notifier.dart';
+import 'package:trogo_app/goods_details_page.dart' show GoodsDetailsPage;
+import 'package:trogo_app/wigets/search_location_screen.dart';
+
+class ScheduleDeliveryPage extends ConsumerStatefulWidget {
   const ScheduleDeliveryPage({super.key});
 
   @override
-  State<ScheduleDeliveryPage> createState() => _ScheduleDeliveryPageState();
+  ConsumerState<ScheduleDeliveryPage> createState() =>
+      _ScheduleDeliveryPageState();
 }
 
-class _ScheduleDeliveryPageState extends State<ScheduleDeliveryPage> {
+class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
   int selectedVehicle = 0;
-  String pickupLocation = "32 Samwell Sq, Chevron";
+  String pickupLocation = "Getting your location...";
   String deliveryLocation = "";
   DateTime? selectedDate;
   TimeOfDay? selectedTime;
-@override
-void initState() {
-  super.initState();
-  _setCurrentPickupLocation();
-}
+  Position? currentPosition;
+  Position? deliveryPosition;
+  bool isLoadingLocation = true;
+  Completer<GoogleMapController> mapController = Completer();
+  Set<Marker> markers = {};
+  Set<Polyline> polylines = {};
+  CameraPosition? initialCameraPosition;
 
-Future<void> _setCurrentPickupLocation() async {
-  try {
-    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) {
-      setState(() => pickupLocation = "Turn on location services");
-      return;
+  @override
+  void initState() {
+    super.initState();
+    _setCurrentPickupLocation();
+    transportVehicletypesApi(ref);
+  }
+
+  // ✅ GEOCODING HELPER FUNCTION ADD करा
+  Future<void> _geocodeAddress(String address) async {
+    try {
+      List<Location> locations = await locationFromAddress(address);
+      if (locations.isNotEmpty) {
+        setState(() {
+          deliveryPosition = Position(
+            latitude: locations.first.latitude,
+            longitude: locations.first.longitude,
+            timestamp: DateTime.now(),
+            accuracy: 0,
+            altitude: 0,
+            altitudeAccuracy: 0,
+            heading: 0,
+            headingAccuracy: 0,
+            speed: 0,
+            speedAccuracy: 0,
+          );
+        });
+      }
+    } catch (e) {
+      print("Geocoding error: $e");
     }
+  }
 
-    LocationPermission permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-    }
+  Future<void> _setCurrentPickupLocation() async {
+    try {
+      setState(() => isLoadingLocation = true);
 
-    if (permission == LocationPermission.denied ||
-        permission == LocationPermission.deniedForever) {
-      setState(() => pickupLocation = "Location permission denied");
-      return;
-    }
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        setState(() {
+          pickupLocation = "Turn on location services";
+          isLoadingLocation = false;
+        });
+        return;
+      }
 
-    setState(() => pickupLocation = "Fetching current location...");
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
 
-    Position position = await Geolocator.getCurrentPosition(
-      desiredAccuracy: LocationAccuracy.high,
-    );
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        setState(() {
+          pickupLocation = "Location permission denied";
+          isLoadingLocation = false;
+        });
+        return;
+      }
 
-    List<Placemark> placemarks =
-        await placemarkFromCoordinates(position.latitude, position.longitude);
+      Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
 
-    if (placemarks.isNotEmpty) {
-      final p = placemarks.first;
       setState(() {
-        pickupLocation =
-            "${p.street ?? ''}, ${p.locality ?? ''}, ${p.administrativeArea ?? ''}";
+        currentPosition = position;
+        initialCameraPosition = CameraPosition(
+          target: LatLng(position.latitude, position.longitude),
+          zoom: 14.5,
+        );
+      });
+
+      List<Placemark> placemarks = await placemarkFromCoordinates(
+        position.latitude,
+        position.longitude,
+      );
+
+      if (placemarks.isNotEmpty) {
+        final p = placemarks.first;
+        String address = "";
+        if (p.street != null && p.street!.isNotEmpty) address += p.street!;
+        if (p.locality != null && p.locality!.isNotEmpty) {
+          address += address.isNotEmpty ? ", ${p.locality!}" : p.locality!;
+        }
+        if (p.subLocality != null && p.subLocality!.isNotEmpty) {
+          address +=
+              address.isNotEmpty ? ", ${p.subLocality!}" : p.subLocality!;
+        }
+
+        setState(() {
+          pickupLocation = address.isNotEmpty ? address : "Current Location";
+          isLoadingLocation = false;
+        });
+      }
+
+      // Update map with pickup marker
+      _updateMapMarkers();
+    } catch (e) {
+      print("❌ Error: $e");
+      setState(() {
+        pickupLocation = "Tap to select location";
+        isLoadingLocation = false;
       });
     }
-  } catch (e) {
-    print("❌ Error: $e");
-    setState(() => pickupLocation = "Tap to select location");
   }
-}
 
+  void _updateMapMarkers() {
+    markers.clear();
+
+    // Add pickup marker
+    if (currentPosition != null) {
+      markers.add(
+        Marker(
+          markerId: MarkerId('pickup'),
+          position: LatLng(
+            currentPosition!.latitude,
+            currentPosition!.longitude,
+          ),
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+          infoWindow: InfoWindow(title: 'Pickup'),
+          zIndex: 2,
+        ),
+      );
+    }
+
+    // Add delivery marker if available
+    if (deliveryPosition != null) {
+      markers.add(
+        Marker(
+          markerId: MarkerId('delivery'),
+          position: LatLng(
+            deliveryPosition!.latitude,
+            deliveryPosition!.longitude,
+          ),
+          icon: BitmapDescriptor.defaultMarkerWithHue(
+            BitmapDescriptor.hueGreen,
+          ),
+          infoWindow: InfoWindow(title: 'Delivery'),
+          zIndex: 2,
+        ),
+      );
+    }
+
+    // Update camera position if both locations are set
+    if (currentPosition != null && deliveryPosition != null) {
+      final bounds = _getBounds(currentPosition!, deliveryPosition!);
+      final controllerFuture = mapController.future;
+      controllerFuture.then((controller) {
+        controller.animateCamera(CameraUpdate.newLatLngBounds(bounds, 100));
+      });
+    }
+
+    if (mounted) setState(() {});
+  }
+
+  LatLngBounds _getBounds(Position pos1, Position pos2) {
+    final southwest = LatLng(
+      pos1.latitude < pos2.latitude ? pos1.latitude : pos2.latitude,
+      pos1.longitude < pos2.longitude ? pos1.longitude : pos2.longitude,
+    );
+    final northeast = LatLng(
+      pos1.latitude > pos2.latitude ? pos1.latitude : pos2.latitude,
+      pos1.longitude > pos2.longitude ? pos1.longitude : pos2.longitude,
+    );
+    return LatLngBounds(southwest: southwest, northeast: northeast);
+  }
 
   @override
   Widget build(BuildContext context) {
+    final transport = ref.watch(transdportVihicletypeProvider);
+
     return Scaffold(
-      backgroundColor: Colors.grey.shade200,
+      backgroundColor: Colors.white,
       body: Stack(
         children: [
           /// BACKGROUND MAP
-          Container(
-            width: double.infinity,
-            height: double.infinity,
-            color: Colors.green.shade100,
-            child: Icon(Icons.map, size: 200, color: Colors.green.shade400),
-          ),
+          if (initialCameraPosition != null)
+            GoogleMap(
+              initialCameraPosition: initialCameraPosition!,
+              onMapCreated: (controller) {
+                mapController.complete(controller);
+              },
+              markers: markers,
+              polylines: polylines,
+              myLocationEnabled: true,
+              myLocationButtonEnabled: false,
+              zoomControlsEnabled: false,
+              mapType: MapType.normal,
+              compassEnabled: true,
+              buildingsEnabled: true,
+              trafficEnabled: true,
+            )
+          else
+            Container(
+              width: double.infinity,
+              height: double.infinity,
+              color: Colors.blueGrey.shade50,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  CircularProgressIndicator(
+                    valueColor: AlwaysStoppedAnimation<Color>(
+                      Colors.blue.shade700,
+                    ),
+                  ),
+                  SizedBox(height: 16),
+                  Text(
+                    "Loading map...",
+                    style: TextStyle(fontSize: 14, color: Colors.grey.shade700),
+                  ),
+                ],
+              ),
+            ),
 
-          /// BACK BUTTON
+          /// TOP BAR GRADIENT
           Positioned(
-            top: 50,
-            left: 20,
-            child: GestureDetector(
-              onTap: () => Navigator.pop(context),
-              child: CircleAvatar(
-                radius: 22,
-                backgroundColor: Colors.white,
-                child: Icon(Icons.arrow_back, color: Colors.black),
-              ),
-            ),
-          ),
-
-          /// BOTTOM SHEET
-          Align(
-            alignment: Alignment.bottomCenter,
+            top: 0,
+            left: 0,
+            right: 0,
             child: Container(
-              padding: EdgeInsets.symmetric(horizontal: 20, vertical: 22),
-              height: MediaQuery.of(context).size.height * 0.65,
+              height: 120,
               decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-              ),
-              child: SingleChildScrollView(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    /// HANDLE
-                    Center(
-                      child: Container(
-                        width: 50,
-                        height: 5,
-                        decoration: BoxDecoration(
-                          color: Colors.grey.shade300,
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                      ),
-                    ),
-                    SizedBox(height: 18),
-
-                    Text(
-                      "Schedule Delivery",
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-
-                    SizedBox(height: 18),
-
-                    /// PICKUP - CLICKABLE
-               /// PICKUP - CLICKABLE
-Text("Pickup Location", style: _labelTextStyle()),
-SizedBox(height: 6),
-GestureDetector(
-  onTap: () async {
-    final result = await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => LocationSearchPage(
-          initialQuery: pickupLocation.contains("Fetching") 
-              ? "" 
-              : pickupLocation,
-          title: "Search Pickup Location",
-        ),
-      ),
-    );
-    if (result != null) {
-      setState(() {
-        pickupLocation = result;
-      });
-    }
-  },
-  child: Container(
-    height: 48,
-    padding: EdgeInsets.symmetric(horizontal: 14),
-    decoration: BoxDecoration(
-      color: Colors.grey.shade100,
-      borderRadius: BorderRadius.circular(12),
-    ),
-    child: Row(
-      children: [
-        // Add animation while fetching
-        if (pickupLocation.contains("Fetching"))
-          SizedBox(
-            width: 18,
-            height: 18,
-            child: CircularProgressIndicator(strokeWidth: 2),
-          )
-        else
-          Icon(Icons.location_on, size: 18, color: Colors.red),
-        SizedBox(width: 12),
-        Expanded(
-          child: Text(
-            pickupLocation.isEmpty 
-                ? "Getting current location..." 
-                : pickupLocation,
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w500,
-              color: pickupLocation.contains("Error") 
-                  ? Colors.orange.shade700 
-                  : Colors.black,
-            ),
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ),
-        Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey),
-      ],
-    ),
-  ),
-),
-                    SizedBox(height: 18),
-
-                    /// DELIVERY - CLICKABLE
-                    Text("Delivery Location", style: _labelTextStyle()),
-                    SizedBox(height: 6),
-                    GestureDetector(
-                      onTap: () async {
-                        final result = await Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => LocationSearchPage(
-                              initialQuery: deliveryLocation,
-                              title: "Search Delivery Location",
-                            ),
-                          ),
-                        );
-                        if (result != null) {
-                          setState(() {
-                            deliveryLocation = result;
-                          });
-                        }
-                      },
-                      child: _locationBox(
-                        Icons.location_on,
-                        Colors.green,
-                        deliveryLocation,
-                      ),
-                    ),
-
-                    SizedBox(height: 18),
-
-                    /// DATE + TIME - CLICKABLE
-                    Row(
-                      children: [
-                        /// DATE PICKER
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text("Date", style: _labelTextStyle()),
-                              SizedBox(height: 6),
-                              GestureDetector(
-                                onTap: _pickDate,
-                                child: _inputBox(
-                                  selectedDate != null
-                                      ? DateFormat('dd/MM/yyyy').format(selectedDate!)
-                                      : "DD/MM/YYYY",
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        SizedBox(width: 12),
-
-                        /// TIME PICKER
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text("Time", style: _labelTextStyle()),
-                              SizedBox(height: 6),
-                              GestureDetector(
-                                onTap: _pickTime,
-                                child: _inputBox(
-                                  selectedTime != null
-                                      ? selectedTime!.format(context)
-                                      : "HH:MM",
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-
-                    SizedBox(height: 22),
-
-                    /// VEHICLE TYPE
-                    Text("Vehicle Type", style: _labelTextStyle()),
-                    SizedBox(height: 10),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        _vehicleBox(0, "assets/images/Group.png"),
-                        _vehicleBox(1, "assets/images/Group.png"),
-                        _vehicleBox(2, "assets/images/van.png"),
-                      ],
-                    ),
-
-                    SizedBox(height: 26),
-
-                    /// NEXT BUTTON
-                    SizedBox(
-                      width: double.infinity,
-                      height: 55,
-                      child: ElevatedButton(
-                        onPressed: () {
-                          if (pickupLocation.isEmpty || deliveryLocation.isEmpty) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text("Please select pickup and delivery locations"),
-                              ),
-                            );
-                            return;
-                          }
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => GoodsDetailsPage(),
-                            ),
-                          );
-                        },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.black,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
-                        child: Text(
-                          "Next",
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                    ),
-                    SizedBox(height: 20),
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.black.withOpacity(0.8),
+                    Colors.black.withOpacity(0.2),
+                    Colors.transparent,
                   ],
                 ),
               ),
             ),
+          ),
+
+          /// BACK BUTTON
+          Positioned(
+            top: MediaQuery.of(context).padding.top + 12,
+            left: 16,
+            child: GestureDetector(
+              onTap: () => Navigator.pop(context),
+              child: Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(22),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.1),
+                      blurRadius: 10,
+                      spreadRadius: 1,
+                    ),
+                  ],
+                ),
+                child: Icon(
+                  Icons.arrow_back_ios_new,
+                  size: 20,
+                  color: Colors.black,
+                ),
+              ),
+            ),
+          ),
+
+          /// LOCATION INDICATORS ON MAP
+          if (currentPosition != null || deliveryPosition != null)
+            Positioned(
+              top: MediaQuery.of(context).padding.top + 80,
+              left: 20,
+              child: Container(
+                padding: EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.1),
+                      blurRadius: 10,
+                      spreadRadius: 2,
+                    ),
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          width: 10,
+                          height: 10,
+                          decoration: BoxDecoration(
+                            color: Colors.red,
+                            borderRadius: BorderRadius.circular(5),
+                          ),
+                        ),
+                        SizedBox(width: 8),
+                        Container(
+                          width: MediaQuery.of(context).size.width * 0.65,
+                          child: Text(
+                            pickupLocation,
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            maxLines: 2,
+                          ),
+                        ),
+                      ],
+                    ),
+                    SizedBox(height: 12),
+                    Container(
+                      height: 20,
+                      width: 1,
+                      color: Colors.grey.shade300,
+                      margin: EdgeInsets.only(left: 4),
+                    ),
+                    SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Container(
+                          width: 10,
+                          height: 10,
+                          decoration: BoxDecoration(
+                            color: Colors.green,
+                            borderRadius: BorderRadius.circular(5),
+                          ),
+                        ),
+                        SizedBox(width: 8),
+                        Container(
+                          width: MediaQuery.of(context).size.width * 0.65,
+                          child: Text(
+                            deliveryLocation.isNotEmpty
+                                ? deliveryLocation
+                                : "Select delivery location",
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                              color:
+                                  deliveryLocation.isNotEmpty
+                                      ? Colors.black
+                                      : Colors.grey,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            maxLines: 2,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+          /// BOTTOM SHEET - UBER STYLE
+          DraggableScrollableSheet(
+            initialChildSize: 0.45,
+            minChildSize: 0.35,
+            maxChildSize: 0.85,
+            snap: true,
+            snapSizes: [0.45, 0.85],
+            builder: (context, scrollController) {
+              return Container(
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.2),
+                      blurRadius: 20,
+                      spreadRadius: 0,
+                    ),
+                  ],
+                ),
+                child: Column(
+                  children: [
+                    /// HANDLE
+                    Container(
+                      margin: EdgeInsets.only(top: 12),
+                      width: 40,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade300,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+
+                    Expanded(
+                      child: SingleChildScrollView(
+                        controller: scrollController,
+                        physics: BouncingScrollPhysics(),
+                        child: Padding(
+                          padding: EdgeInsets.symmetric(
+                            horizontal: 20,
+                            vertical: 16,
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              SizedBox(height: 8),
+
+                              /// TITLE
+                              Text(
+                                "Schedule Delivery",
+                                style: TextStyle(
+                                  fontSize: 22,
+                                  fontWeight: FontWeight.w700,
+                                  color: Colors.black,
+                                ),
+                              ),
+                              SizedBox(height: 4),
+                              Text(
+                                "Enter pickup and delivery details",
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  color: Colors.grey.shade600,
+                                ),
+                              ),
+
+                              SizedBox(height: 20),
+
+                              /// LOCATION CARDS
+                              _buildLocationCard(
+                                context,
+                                isPickup: true,
+                                location: pickupLocation,
+                                isLoading: isLoadingLocation,
+                                onTap: () async {
+                                  print("📍 Opening pickup location search...");
+                                  final result = await Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) => LocationSearchPage(
+                                        initialQuery: pickupLocation.contains(
+                                                  "Getting",
+                                                )
+                                            ? ""
+                                            : pickupLocation,
+                                        title: "Set Pickup Location",
+                                        currentPosition: currentPosition,
+                                      ),
+                                    ),
+                                  );
+
+                                  print("📍 Pickup result type: ${result.runtimeType}");
+                                  print("📍 Pickup result value: $result");
+
+                                  if (result != null) {
+                                    _processLocationResult(
+                                      result,
+                                      isPickup: true,
+                                    );
+                                  }
+                                },
+                              ),
+
+                              SizedBox(height: 16),
+
+                              _buildLocationCard(
+                                context,
+                                isPickup: false,
+                                location: deliveryLocation,
+                                isLoading: false,
+                                onTap: () async {
+                                  print("📍 Opening delivery location search...");
+                                  final result = await Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) => LocationSearchPage(
+                                        initialQuery: deliveryLocation,
+                                        title: "Set Delivery Location",
+                                        currentPosition: currentPosition,
+                                      ),
+                                    ),
+                                  );
+
+                                  print("📍 Delivery result type: ${result.runtimeType}");
+                                  print("📍 Delivery result value: $result");
+
+                                  if (result != null) {
+                                    _processLocationResult(
+                                      result,
+                                      isPickup: false,
+                                    );
+                                  }
+                                },
+                              ),
+
+                              SizedBox(height: 20),
+
+                              /// DATE & TIME ROW
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: _buildDateTimeButton(
+                                      icon: Icons.calendar_today,
+                                      title: "Date",
+                                      value: selectedDate != null
+                                          ? DateFormat('dd/MM/yyyy').format(selectedDate!)
+                                          : "Today",
+                                      onTap: _pickDate,
+                                    ),
+                                  ),
+                                  SizedBox(width: 12),
+                                  Expanded(
+                                    child: _buildDateTimeButton(
+                                      icon: Icons.access_time,
+                                      title: "Time",
+                                      value: selectedTime != null
+                                          ? selectedTime!.format(context)
+                                          : "Now",
+                                      onTap: _pickTime,
+                                    ),
+                                  ),
+                                ],
+                              ),
+
+                              SizedBox(height: 20),
+
+                              /// VEHICLE TYPE SECTION
+                              Text(
+                                "Vehicle Type",
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.black87,
+                                ),
+                              ),
+                              SizedBox(height: 12),
+
+                              SizedBox(
+                                height: 110,
+                                child: ListView.builder(
+                                  scrollDirection: Axis.horizontal,
+                                  physics: BouncingScrollPhysics(),
+                                  itemCount: transport.length,
+                                  itemBuilder: (context, index) {
+                                    final vehicle = transport[index];
+                                    bool isSelected = selectedVehicle == index;
+
+                                    return GestureDetector(
+                                      onTap: () {
+                                        setState(() => selectedVehicle = index);
+                                      },
+                                      child: Container(
+                                        width: 120,
+                                        margin: EdgeInsets.only(right: 12),
+                                        decoration: BoxDecoration(
+                                          color: isSelected
+                                              ? Colors.blue.shade50
+                                              : Colors.grey.shade50,
+                                          borderRadius: BorderRadius.circular(16),
+                                          border: Border.all(
+                                            color: isSelected
+                                                ? Colors.blue.shade700
+                                                : Colors.grey.shade300,
+                                            width: isSelected ? 2 : 1,
+                                          ),
+                                        ),
+                                        child: Column(
+                                          mainAxisAlignment: MainAxisAlignment.center,
+                                          children: [
+                                            Container(
+                                              width: 50,
+                                              height: 50,
+                                              decoration: BoxDecoration(
+                                                color: isSelected
+                                                    ? Colors.blue.shade100
+                                                    : Colors.grey.shade200,
+                                                shape: BoxShape.circle,
+                                              ),
+                                              child: Center(
+                                                child: Image.network(
+                                                  vehicle.image,
+                                                  width: 30,
+                                                  height: 30,
+                                                ),
+                                              ),
+                                            ),
+                                            SizedBox(height: 8),
+                                            Text(
+                                              vehicle.name,
+                                              style: TextStyle(
+                                                fontSize: 13,
+                                                fontWeight: FontWeight.w600,
+                                                color: isSelected
+                                                    ? Colors.blue.shade700
+                                                    : Colors.black87,
+                                              ),
+                                            ),
+                                            SizedBox(height: 4),
+                                            Text(
+                                              "₹${(index + 1) * 50} approx",
+                                              style: TextStyle(
+                                                fontSize: 11,
+                                                color: Colors.grey.shade600,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ),
+
+                              SizedBox(height: 30),
+
+                              /// NEXT BUTTON
+                              _buildNextButton(context),
+
+                              SizedBox(
+                                height: MediaQuery.of(context).padding.bottom + 16,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
           ),
         ],
       ),
     );
   }
 
-  /// ---------- DATE/TIME PICKERS ----------
+  // ✅ NEW HELPER FUNCTION: Process location result
+  void _processLocationResult(dynamic result, {required bool isPickup}) {
+    try {
+      // If result is Map (new version with coordinates)
+      if (result is Map<String, dynamic>) {
+        final address = result['address']?.toString() ?? "Unknown Address";
+        final lat = double.tryParse(result['lat'].toString()) ?? 0.0;
+        final lng = double.tryParse(result['lng'].toString()) ?? 0.0;
+
+        setState(() {
+          if (isPickup) {
+            pickupLocation = address;
+            currentPosition = Position(
+              latitude: lat,
+              longitude: lng,
+              timestamp: DateTime.now(),
+              accuracy: 0,
+              altitude: 0,
+              altitudeAccuracy: 0,
+              heading: 0,
+              headingAccuracy: 0,
+              speed: 0,
+              speedAccuracy: 0,
+            );
+          } else {
+            deliveryLocation = address;
+            deliveryPosition = Position(
+              latitude: lat,
+              longitude: lng,
+              timestamp: DateTime.now(),
+              accuracy: 0,
+              altitude: 0,
+              altitudeAccuracy: 0,
+              heading: 0,
+              headingAccuracy: 0,
+              speed: 0,
+              speedAccuracy: 0,
+            );
+          }
+        });
+      }
+      // If result is String (old version)
+      else if (result is String) {
+        setState(() {
+          if (isPickup) {
+            pickupLocation = result;
+            // Try to geocode the address for coordinates
+            if (result.isNotEmpty && !result.contains("Getting")) {
+              _geocodeAddress(result);
+            }
+          } else {
+            deliveryLocation = result;
+            // Try to geocode the address for coordinates
+            if (result.isNotEmpty) {
+              _geocodeAddress(result);
+            }
+          }
+        });
+      }
+
+      _updateMapMarkers();
+      if (!isPickup && deliveryPosition != null) {
+        _getRoutePolyline();
+      }
+    } catch (e) {
+      print("Error processing location result: $e");
+      // Fallback: just set the address
+      setState(() {
+        if (isPickup) {
+          pickupLocation = result.toString();
+        } else {
+          deliveryLocation = result.toString();
+        }
+      });
+    }
+  }
+
+  Widget _buildLocationCard(
+    BuildContext context, {
+    required bool isPickup,
+    required String location,
+    required bool isLoading,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: Colors.grey.shade200, width: 1.5),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 8,
+              spreadRadius: 1,
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: isPickup ? Colors.red.shade50 : Colors.green.shade50,
+                shape: BoxShape.circle,
+              ),
+              child: Center(
+                child: Icon(
+                  isPickup ? Icons.circle : Icons.flag_circle,
+                  color: isPickup ? Colors.red : Colors.green,
+                  size: 22,
+                ),
+              ),
+            ),
+            SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    isPickup ? "Pickup location" : "Delivery location",
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.grey.shade600,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  SizedBox(height: 4),
+                  if (isLoading)
+                    Row(
+                      children: [
+                        SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                              isPickup ? Colors.red : Colors.green,
+                            ),
+                          ),
+                        ),
+                        SizedBox(width: 8),
+                        Text(
+                          "Getting location...",
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: Colors.grey.shade700,
+                          ),
+                        ),
+                      ],
+                    )
+                  else
+                    Text(
+                      location.isNotEmpty ? location : "Select location",
+                      style: TextStyle(
+                        fontSize: 15,
+                        color: location.isNotEmpty
+                            ? Colors.black
+                            : Colors.grey.shade500,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                ],
+              ),
+            ),
+            Icon(Icons.chevron_right, color: Colors.grey.shade400, size: 24),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDateTimeButton({
+    required IconData icon,
+    required String title,
+    required String value,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.grey.shade50,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: Colors.grey.shade200, width: 1.5),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(icon, size: 18, color: Colors.blue.shade700),
+                SizedBox(width: 8),
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: Colors.grey.shade600,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+            SizedBox(height: 8),
+            Text(
+              value,
+              style: TextStyle(
+                fontSize: 16,
+                color: Colors.black,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNextButton(BuildContext context) {
+    bool isReady = pickupLocation.isNotEmpty &&
+        deliveryLocation.isNotEmpty &&
+        !pickupLocation.contains("Getting") &&
+        !pickupLocation.contains("Tap to");
+
+    return GestureDetector(
+      onTap: isReady
+          ? () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => GoodsDetailsPage(
+                    pickupLocation: pickupLocation,
+                    deliveryLocation: deliveryLocation,
+                    selectedDate: selectedDate,
+                    selectedTime: selectedTime,
+                    selectedVehicle: selectedVehicle,
+                  ),
+                ),
+              );
+            }
+          : null,
+      child: AnimatedContainer(
+        duration: Duration(milliseconds: 300),
+        width: double.infinity,
+        height: 56,
+        decoration: BoxDecoration(
+          color: isReady ? Colors.black : Colors.grey.shade300,
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: isReady
+              ? [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.2),
+                    blurRadius: 10,
+                    spreadRadius: 1,
+                  ),
+                ]
+              : [],
+        ),
+        child: Center(
+          child: Text(
+            "Next →",
+            style: TextStyle(
+              fontSize: 17,
+              fontWeight: FontWeight.w600,
+              color: isReady ? Colors.white : Colors.grey.shade500,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _getRoutePolyline() async {
+    if (currentPosition == null || deliveryPosition == null) return;
+
+    // Here you would call Google Directions API
+    // For now, we'll create a simple straight line
+    polylines.clear();
+    polylines.add(
+      Polyline(
+        polylineId: PolylineId('route'),
+        color: Colors.blue.shade600,
+        width: 4,
+        points: [
+          LatLng(currentPosition!.latitude, currentPosition!.longitude),
+          LatLng(deliveryPosition!.latitude, deliveryPosition!.longitude),
+        ],
+      ),
+    );
+
+    if (mounted) setState(() {});
+  }
+
   Future<void> _pickDate() async {
     final DateTime? picked = await showDatePicker(
       context: context,
       initialDate: DateTime.now(),
       firstDate: DateTime.now(),
-      lastDate: DateTime(DateTime.now().year + 1),
+      lastDate: DateTime.now().add(Duration(days: 365)),
+      builder: (context, child) {
+        return Theme(
+          data: ThemeData.light().copyWith(
+            colorScheme: ColorScheme.light(
+              primary: Colors.black,
+              onPrimary: Colors.white,
+              surface: Colors.white,
+              onSurface: Colors.black,
+            ),
+            dialogBackgroundColor: Colors.white,
+          ),
+          child: child!,
+        );
+      },
     );
     if (picked != null && picked != selectedDate) {
       setState(() => selectedDate = picked);
@@ -350,558 +991,23 @@ GestureDetector(
     final TimeOfDay? picked = await showTimePicker(
       context: context,
       initialTime: TimeOfDay.now(),
+      builder: (context, child) {
+        return Theme(
+          data: ThemeData.light().copyWith(
+            colorScheme: ColorScheme.light(
+              primary: Colors.black,
+              onPrimary: Colors.white,
+              surface: Colors.white,
+              onSurface: Colors.black,
+            ),
+            dialogBackgroundColor: Colors.white,
+          ),
+          child: child!,
+        );
+      },
     );
     if (picked != null && picked != selectedTime) {
       setState(() => selectedTime = picked);
     }
-  }
-
-  /// ---------- REUSABLE WIDGETS ----------
-  TextStyle _labelTextStyle() {
-    return TextStyle(
-      fontSize: 13,
-      fontWeight: FontWeight.w600,
-      color: Colors.black87,
-    );
-  }
-
-  Widget _locationBox(IconData icon, Color color, String text) {
-    return Container(
-      height: 48,
-      padding: EdgeInsets.symmetric(horizontal: 14),
-      decoration: BoxDecoration(
-        color: Colors.grey.shade100,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        children: [
-          Icon(icon, size: 18, color: color),
-          SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              text,
-              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
-            ),
-          ),
-          Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey),
-        ],
-      ),
-    );
-  }
-
-  Widget _inputBox(String hint) {
-    return Container(
-      height: 48,
-      padding: EdgeInsets.symmetric(horizontal: 14),
-      decoration: BoxDecoration(
-        color: Colors.grey.shade100,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Align(
-        alignment: Alignment.centerLeft,
-        child: Text(
-          hint,
-          style: TextStyle(fontSize: 13, color: Colors.grey.shade500),
-        ),
-      ),
-    );
-  }
-
-  Widget _vehicleBox(int index, String iconPath) {
-    bool isSelected = selectedVehicle == index;
-    return GestureDetector(
-      onTap: () => setState(() => selectedVehicle = index),
-      child: Container(
-        height: 80,
-        width: 90,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: isSelected ? Colors.black : Colors.grey.shade300,
-            width: isSelected ? 2 : 1,
-          ),
-        ),
-        child: Center(child: Image.asset(iconPath, height: 40)),
-      ),
-    );
-  }
-}
-
-
-
-class LocationSearchPage extends StatefulWidget {
-  final String initialQuery;
-  final String title;
-
-  const LocationSearchPage({
-    super.key,
-    required this.initialQuery,
-    required this.title,
-  });
-
-  @override
-  State<LocationSearchPage> createState() => _LocationSearchPageState();
-}
-
-class _LocationSearchPageState extends State<LocationSearchPage> {
-  final TextEditingController _searchController = TextEditingController();
-  List<Map<String, dynamic>> _searchResults = [];
-  List<Map<String, dynamic>> _nearbyPlaces = [];
-  bool _isLoading = false;
-  bool _isLoadingCurrent = true;
-  Position? _currentPosition;
-  String _currentAddress = "";
-
-  @override
-  void initState() {
-    super.initState();
-    _searchController.text = widget.initialQuery;
-    _getCurrentLocationAndNearbyPlaces();
-  }
-
-  Future<void> _getCurrentLocationAndNearbyPlaces() async {
-    try {
-      // Get current location
-      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) {
-        setState(() => _isLoadingCurrent = false);
-        return;
-      }
-
-      LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-      }
-      if (permission == LocationPermission.deniedForever ||
-          permission == LocationPermission.denied) {
-        setState(() => _isLoadingCurrent = false);
-        return;
-      }
-
-      _currentPosition = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.medium,
-      );
-
-      // Get address from coordinates
-      if (_currentPosition != null) {
-        List<Placemark> placemarks = await placemarkFromCoordinates(
-          _currentPosition!.latitude,
-          _currentPosition!.longitude,
-        );
-
-        if (placemarks.isNotEmpty) {
-          final place = placemarks.first;
-          _currentAddress = "${place.street}, ${place.locality}";
-        }
-      }
-
-      // Fetch nearby places (restaurants, cafes, etc.)
-      await _fetchNearbyPlaces();
-    } catch (e) {
-      print("Error getting location: $e");
-    } finally {
-      setState(() => _isLoadingCurrent = false);
-    }
-  }
-
-  Future<void> _fetchNearbyPlaces() async {
-    if (_currentPosition == null) return;
-
-    try {
-      final url = Uri.parse(
-        'https://maps.googleapis.com/maps/api/place/nearbysearch/json?'
-        'location=${_currentPosition!.latitude},${_currentPosition!.longitude}'
-        '&radius=2000' // 2km radius
-        '&type=establishment' // You can change to: restaurant, cafe, etc.
-        '&key=$GOOGLE_PLACES_API_KEY',
-      );
-
-      final response = await http.get(url);
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        if (data['status'] == 'OK') {
-          setState(() {
-            _nearbyPlaces = List<Map<String, dynamic>>.from(data['results']
-                .map((place) => {
-                      'name': place['name'],
-                      'address': place['vicinity'],
-                      'types': List<String>.from(place['types'] ?? []),
-                    })
-                .take(5)); // Show only top 5
-          });
-        }
-      }
-    } catch (e) {
-      print("Error fetching nearby places: $e");
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.title),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () => Navigator.pop(context),
-        ),
-      ),
-      body: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          /// SEARCH BAR
-          Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Container(
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.grey.withOpacity(0.1),
-                    blurRadius: 10,
-                    spreadRadius: 2,
-                  ),
-                ],
-              ),
-              child: TextField(
-                controller: _searchController,
-                decoration: InputDecoration(
-                  hintText: "Search address, place, landmark...",
-                  hintStyle: TextStyle(color: Colors.grey.shade500),
-                  prefixIcon: Icon(Icons.search, color: Colors.blue.shade700),
-                  border: InputBorder.none,
-                  contentPadding: const EdgeInsets.all(16),
-                  suffixIcon: _searchController.text.isNotEmpty
-                      ? IconButton(
-                          icon: Icon(Icons.clear, color: Colors.grey.shade600),
-                          onPressed: () {
-                            _searchController.clear();
-                            setState(() => _searchResults.clear());
-                          },
-                        )
-                      : null,
-                ),
-                onChanged: (value) {
-                  if (value.length > 2) {
-                    _searchPlaces(value);
-                  } else {
-                    setState(() => _searchResults.clear());
-                  }
-                },
-              ),
-            ),
-          ),
-
-          /// CURRENT LOCATION CARD
-          if (_currentPosition != null && !_isLoadingCurrent)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: GestureDetector(
-                onTap: () {
-                  Navigator.pop(context, _currentAddress);
-                },
-                child: Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: Colors.blue.shade50,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.blue.shade100, width: 1),
-                  ),
-                  child: Row(
-                    children: [
-                      Container(
-                        width: 40,
-                        height: 40,
-                        decoration: BoxDecoration(
-                          color: Colors.blue.shade100,
-                          shape: BoxShape.circle,
-                        ),
-                        child: Icon(Icons.my_location,
-                            color: Colors.blue.shade700, size: 20),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              "Use Current Location",
-                              style: TextStyle(
-                                fontSize: 15,
-                                fontWeight: FontWeight.w600,
-                                color: Colors.blue.shade800,
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              _currentAddress,
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: Colors.grey.shade700,
-                              ),
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ],
-                        ),
-                      ),
-                      Icon(Icons.arrow_forward_ios,
-                          color: Colors.blue.shade700, size: 16),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-
-          /// NEARBY PLACES SECTION
-          if (_nearbyPlaces.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Text(
-                "Nearby Places",
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.grey.shade700,
-                ),
-              ),
-            ),
-
-          /// NEARBY PLACES LIST
-          if (_nearbyPlaces.isNotEmpty)
-            Expanded(
-              child: ListView.builder(
-                physics: const BouncingScrollPhysics(),
-                itemCount: _nearbyPlaces.length,
-                itemBuilder: (context, index) {
-                  final place = _nearbyPlaces[index];
-                  return _buildPlaceItem(
-                    icon: _getPlaceIcon(place['types']),
-                    title: place['name'],
-                    subtitle: place['address'],
-                    onTap: () {
-                      Navigator.pop(context, "${place['name']}, ${place['address']}");
-                    },
-                  );
-                },
-              ),
-            ),
-
-          /// SEARCH RESULTS
-          if (_searchResults.isNotEmpty)
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                    child: Text(
-                      "Search Results",
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.grey.shade700,
-                      ),
-                    ),
-                  ),
-                  Expanded(
-                    child: ListView.builder(
-                      physics: const BouncingScrollPhysics(),
-                      itemCount: _searchResults.length,
-                      itemBuilder: (context, index) {
-                        final place = _searchResults[index];
-                        return _buildPlaceItem(
-                          icon: Icons.location_on,
-                          title: place['description'] ?? '',
-                          subtitle: "",
-                          showDivider: index != _searchResults.length - 1,
-                          onTap: () {
-                            Navigator.pop(context, place['description']);
-                          },
-                        );
-                      },
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-          /// LOADING INDICATORS
-          if (_isLoadingCurrent)
-            const Padding(
-              padding: EdgeInsets.all(20),
-              child: Center(
-                child: Column(
-                  children: [
-                    CircularProgressIndicator(),
-                    SizedBox(height: 10),
-                    Text(
-                      "Finding nearby places...",
-                      style: TextStyle(color: Colors.grey),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-
-          if (_searchResults.isEmpty && _nearbyPlaces.isEmpty && !_isLoadingCurrent)
-            Expanded(
-              child: Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.explore, size: 60, color: Colors.grey.shade400),
-                    const SizedBox(height: 16),
-                    Text(
-                      "Search for a location or use your current location",
-                      style: TextStyle(
-                        color: Colors.grey.shade600,
-                        fontSize: 14,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                  ],
-                ),
-              ),
-            ),
-
-          /// MANUAL ENTRY OPTION
-          if (_searchController.text.isNotEmpty && _searchResults.isEmpty)
-            Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: ElevatedButton.icon(
-                onPressed: () {
-                  Navigator.pop(context, _searchController.text);
-                },
-                icon: const Icon(Icons.add_location_alt, size: 20),
-                label: const Text("Use Custom Location"),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.green.shade600,
-                  foregroundColor: Colors.white,
-                  minimumSize: const Size(double.infinity, 50),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildPlaceItem({
-    required IconData icon,
-    required String title,
-    required String subtitle,
-    bool showDivider = true,
-    required VoidCallback onTap,
-  }) {
-    return Column(
-      children: [
-        ListTile(
-          leading: Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: Colors.blue.shade50,
-              shape: BoxShape.circle,
-            ),
-            child: Icon(icon, color: Colors.blue.shade700, size: 20),
-          ),
-          title: Text(
-            title,
-            style: const TextStyle(
-              fontSize: 15,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          subtitle: subtitle.isNotEmpty
-              ? Text(
-                  subtitle,
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: Colors.grey.shade600,
-                  ),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                )
-              : null,
-          trailing: Icon(Icons.arrow_forward_ios,
-              color: Colors.grey.shade500, size: 16),
-          onTap: onTap,
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        ),
-        if (showDivider)
-          Padding(
-            padding: const EdgeInsets.only(left: 70),
-            child: Divider(
-              height: 1,
-              color: Colors.grey.shade200,
-            ),
-          ),
-      ],
-    );
-  }
-
-  IconData _getPlaceIcon(List<dynamic> types) {
-    if (types.contains('restaurant') || types.contains('food')) {
-      return Icons.restaurant;
-    } else if (types.contains('cafe')) {
-      return Icons.local_cafe;
-    } else if (types.contains('store') || types.contains('shopping_mall')) {
-      return Icons.shopping_bag;
-    } else if (types.contains('hospital') || types.contains('health')) {
-      return Icons.local_hospital;
-    } else if (types.contains('gas_station')) {
-      return Icons.local_gas_station;
-    } else if (types.contains('park')) {
-      return Icons.park;
-    }
-    return Icons.place;
-  }
-
-  /// ---------- GOOGLE PLACES API CALL ----------
-  static const String GOOGLE_PLACES_API_KEY = "AIzaSyBGv9znbx4hAdCp_6YK0-HO2XVKI4ZXALk";
-
-  Future<void> _searchPlaces(String query) async {
-    if (query.isEmpty) return;
-
-    setState(() => _isLoading = true);
-
-    try {
-      final url = Uri.parse(
-        'https://maps.googleapis.com/maps/api/place/autocomplete/json?'
-        'input=$query'
-        '&key=$GOOGLE_PLACES_API_KEY'
-        '&location=${_currentPosition?.latitude ?? 19.0760},${_currentPosition?.longitude ?? 72.8777}' // Mumbai default
-        '&radius=10000' // 10km radius
-        '&components=country:IN',
-      );
-
-      final response = await http.get(url);
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        if (data['status'] == 'OK') {
-          setState(() {
-            _searchResults = List<Map<String, dynamic>>.from(data['predictions']);
-          });
-        } else {
-          setState(() => _searchResults = []);
-        }
-      }
-    } catch (e) {
-      print("Error fetching places: $e");
-    } finally {
-      setState(() => _isLoading = false);
-    }
-  }
-
-  @override
-  void dispose() {
-    _searchController.dispose();
-    super.dispose();
   }
 }

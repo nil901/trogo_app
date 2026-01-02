@@ -22,7 +22,7 @@ class SplashServices {
       } else {
        Navigator.pushReplacement(
             context,
-            MaterialPageRoute(builder: (context) => LocationPermissionScreen()),
+            MaterialPageRoute(builder: (context) => PhoneNumberScreen()),
           );
       
       }

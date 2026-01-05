@@ -366,8 +366,8 @@ class LoginNotifier extends StateNotifier<AsyncValue<void>> {
     state = const AsyncValue.loading();
     try {
       final response = await ApiService().postRequest(loginEndPoint, {
-        "email":"vikas@gmail.com",
-        "password":"vikas1234",
+        "email":stId,
+        "password":password,
         "type": "user",
       });
 
@@ -391,7 +391,7 @@ class LoginNotifier extends StateNotifier<AsyncValue<void>> {
         await AppPreference().setString(PreferencesKey.userEmail, user['email']);
         await AppPreference().setString(PreferencesKey.userMobile, user['mobile']);
         await AppPreference().setString(PreferencesKey.userGender, user['gender']);
-        await AppPreference().setString(PreferencesKey.userProfileImage, user['profileImage']);
+        await AppPreference().setString(PreferencesKey.userProfileImage, user['profileImage']??"");
 
         state = const AsyncValue.data(null);
 

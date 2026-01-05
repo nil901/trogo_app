@@ -24,8 +24,7 @@ class SplashServices {
             context,
             MaterialPageRoute(builder: (context) => PhoneNumberScreen()),
           );
-      
-      }
+          } 
       // Navigator.popAndPushNamed(context, RoutesName.loginscreen);
     });
   }

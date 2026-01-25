@@ -93,9 +93,8 @@ class OtpScreen extends StatelessWidget {
               // ✅ VERIFY OTP BUTTON
               Padding(
                 padding: EdgeInsets.only(
-                  bottom: MediaQuery.of(context).viewInsets.bottom > 0
-                      ? 10
-                      : 20,
+                  bottom:
+                      MediaQuery.of(context).viewInsets.bottom > 0 ? 10 : 20,
                 ),
                 child: SizedBox(
                   height: 50,

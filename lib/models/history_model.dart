@@ -1,4 +1,3 @@
-
 class BookingHistory {
   final String id;
   final Passenger passenger;
@@ -11,11 +10,13 @@ class BookingHistory {
   final String status;
   final DateTime createdAt;
   final DateTime updatedAt;
-  final String? packageImage;
+
+  final List<String> packageImage;
   final ScheduleDetails? schedule;
   final GoodsDetails? goods;
   final ReceiverDetails? receiver;
   final PaymentDetails? payment;
+
   final String? paymentBy;
   final String? paymentType;
   final double? finalFare;
@@ -35,7 +36,7 @@ class BookingHistory {
     required this.status,
     required this.createdAt,
     required this.updatedAt,
-    this.packageImage,
+    required this.packageImage,
     this.schedule,
     this.goods,
     this.receiver,
@@ -52,55 +53,71 @@ class BookingHistory {
     return BookingHistory(
       id: json['_id'] ?? '',
       passenger: Passenger.fromJson(json['passenger'] ?? {}),
-      vehicleType: json['vehicleType'] ?? '',
+      vehicleType: json['vehicleType']?.toString() ?? '',
       bookingType: json['bookingType'] ?? '',
       pickup: PickupLocation.fromJson(json['pickup'] ?? {}),
       drop: DropLocation.fromJson(json['drop'] ?? {}),
       distanceKm: (json['distanceKm'] as num?)?.toDouble() ?? 0.0,
       estimatedFare: (json['estimatedFare'] as num?)?.toDouble() ?? 0.0,
       status: json['status'] ?? '',
-      createdAt: DateTime.parse(json['createdAt'] ?? DateTime.now().toIso8601String()),
-      updatedAt: DateTime.parse(json['updatedAt'] ?? DateTime.now().toIso8601String()),
-      packageImage: json['packageImage'],
-      finalFare: (json['finalFare'] as num?)?.toDouble(),
-      transporter: json['transporter'] != null ? Transporter.fromJson(json['transporter']) : null,
-      type: json['type'],
-      vehicle: json['vehicle'],
+      createdAt: DateTime.tryParse(json['createdAt'] ?? '') ?? DateTime.now(),
+      updatedAt: DateTime.tryParse(json['updatedAt'] ?? '') ?? DateTime.now(),
+
+      packageImage: (json['packageImage'] as List?)
+              ?.map((e) => e.toString())
+              .toList() ??
+          [],
+
+      schedule: json['scheduleDate'] != null
+          ? ScheduleDetails(
+              date: json['scheduleDate'] ?? '',
+              time: json['scheduleTime'] ?? '',
+            )
+          : null,
+
+      goods: json['goods'] != null
+          ? GoodsDetails.fromJson(json['goods'])
+          : null,
+
+      receiver: json['receiver'] != null
+          ? ReceiverDetails.fromJson(json['receiver'])
+          : null,
+
+      payment: json['payment'] != null
+          ? PaymentDetails.fromJson(json['payment'])
+          : null,
+
       paymentBy: json['paymentBy'],
       paymentType: json['paymentType'],
-      schedule: json['scheduleDate'] != null 
-          ? ScheduleDetails.fromJson({
-              'date': json['scheduleDate'],
-              'time': json['scheduleTime'],
-            })
+      finalFare: (json['finalFare'] as num?)?.toDouble(),
+      transporter: json['transporter'] != null
+          ? Transporter.fromJson(json['transporter'])
           : null,
-      goods: json['goods'] != null ? GoodsDetails.fromJson(json['goods']) : null,
-      receiver: json['receiver'] != null ? ReceiverDetails.fromJson(json['receiver']) : null,
-      payment: json['payment'] != null ? PaymentDetails.fromJson(json['payment']) : null,
+
+      type: json['type'],
+      vehicle: json['vehicle'],
     );
   }
 }
-
 class Passenger {
   final String id;
   final String name;
-  final String profileImage;
+  final String? profileImage;
 
   Passenger({
     required this.id,
     required this.name,
-    required this.profileImage,
+    this.profileImage,
   });
 
   factory Passenger.fromJson(Map<String, dynamic> json) {
     return Passenger(
       id: json['_id'] ?? '',
       name: json['name'] ?? '',
-      profileImage: json['profileImage'] ?? '',
+      profileImage: json['profileImage'],
     );
   }
 }
-
 class PickupLocation {
   final String address;
   final Location location;
@@ -134,7 +151,6 @@ class DropLocation {
     );
   }
 }
-
 class Location {
   final String type;
   final List<double> coordinates;
@@ -145,14 +161,14 @@ class Location {
   });
 
   factory Location.fromJson(Map<String, dynamic> json) {
-    final List<dynamic> coords = json['coordinates'] ?? [];
+    final coords = json['coordinates'] as List?;
     return Location(
       type: json['type'] ?? 'Point',
-      coordinates: coords.map((e) => (e as num).toDouble()).toList(),
+      coordinates:
+          coords?.map((e) => (e as num).toDouble()).toList() ?? [],
     );
   }
 }
-
 class ScheduleDetails {
   final String date;
   final String time;
@@ -161,15 +177,7 @@ class ScheduleDetails {
     required this.date,
     required this.time,
   });
-
-  factory ScheduleDetails.fromJson(Map<String, dynamic> json) {
-    return ScheduleDetails(
-      date: json['date'] ?? '',
-      time: json['time'] ?? '',
-    );
-  }
 }
-
 class GoodsDetails {
   final String name;
   final double weightKg;
@@ -186,7 +194,6 @@ class GoodsDetails {
     );
   }
 }
-
 class ReceiverDetails {
   final String name;
   final String phone;
@@ -203,13 +210,10 @@ class ReceiverDetails {
     );
   }
 }
-
 class PaymentDetails {
   final bool paid;
 
-  PaymentDetails({
-    required this.paid,
-  });
+  PaymentDetails({required this.paid});
 
   factory PaymentDetails.fromJson(Map<String, dynamic> json) {
     return PaymentDetails(
@@ -217,18 +221,17 @@ class PaymentDetails {
     );
   }
 }
-
 class Transporter {
   final String id;
   final String name;
   final String mobile;
-  final String profileImage;
+  final String? profileImage;
 
   Transporter({
     required this.id,
     required this.name,
     required this.mobile,
-    required this.profileImage,
+    this.profileImage,
   });
 
   factory Transporter.fromJson(Map<String, dynamic> json) {
@@ -236,7 +239,7 @@ class Transporter {
       id: json['_id'] ?? '',
       name: json['name'] ?? '',
       mobile: json['mobile'] ?? '',
-      profileImage: json['profileImage'] ?? '',
+      profileImage: json['profileImage'],
     );
   }
 }

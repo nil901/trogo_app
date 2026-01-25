@@ -23,8 +23,8 @@ class _MainBottomNavState extends State<MainBottomNav> {
 
     pages = [
       HomeScreen(selectedLocation: widget.selectedLocation),
-      GoodsTransportPage(),
-      MyRidesHistoryPage(),
+      GoodsTransportPage(selectedLocation: widget.selectedLocation),
+      MyRidesHistoryPage(selectedLocation: widget.selectedLocation),
       ProfilePage(),
     ];
   }

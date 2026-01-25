@@ -1,7 +1,9 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/legacy.dart';
 import 'package:trogo_app/auth/login_notifier.dart';
 import 'package:trogo_app/location_permission_screen.dart';
+import 'package:trogo_app/models/vehicle_type_model.dart';
 import 'package:trogo_app/rider_book_screen.dart';
 import 'package:trogo_app/wigets/around_you_cars_loactions.dart';
 import 'package:trogo_app/wigets/bannars.dart';
@@ -16,11 +18,16 @@ class HomeScreen extends ConsumerStatefulWidget {
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   @override
-  void initState() {
-    vehicletypesApi(ref);
-    // TODO: implement initState
-    super.initState();
-  }
+@override
+void initState() {
+  super.initState();
+ 
+
+  Future.microtask(() {
+
+    vehicletypesApi(ref, "passenger");
+  });
+}
 
   @override
   Widget build(BuildContext context) {
@@ -168,18 +175,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 sectionTitle("Ride with us"),
                 AllBannersWidget(),
                 const SizedBox(height: 24),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(20),
-                    child: Image.asset(
-                      "assets/images/sedan.png",
-                      width: double.infinity,
-                      height: 130,
-                      fit: BoxFit.cover,
-                    ),
-                  ),
-                ),
+                // Padding(
+                //   padding: const EdgeInsets.symmetric(horizontal: 16),
+                //   child: ClipRRect(
+                //     borderRadius: BorderRadius.circular(20),
+                //     child: Image.asset(
+                //       "assets/images/sedan.png",
+                //       width: double.infinity,
+                //       height: 130,
+                //       fit: BoxFit.cover,
+                //     ),
+                //   ),
+                // ),
                 const Padding(
                   padding: EdgeInsets.fromLTRB(16, 24, 16, 12),
                   child: Align(

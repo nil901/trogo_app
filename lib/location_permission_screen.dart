@@ -22,20 +22,20 @@ class _LocationPermissionScreenState extends State<LocationPermissionScreen>
     with SingleTickerProviderStateMixin {
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
+  late Animation<double> _slideAnimation;
   bool _isLoading = false;
   String _errorMessage = '';
   SelectedLocation? _selectedLocation;
   bool _autoNavigating = false;
+  int _currentStep = 1; // 1: Permission, 2: Fetching, 3: Success
   
-  // API Configuration
-  // static const String _baseUrl = "https://trogo-app-backend.onrender.com";
+  String? tokens = AppPreference().getString(PreferencesKey.authToken);
 
-String? tokens = AppPreference().getString(PreferencesKey.authToken);
   @override
   void initState() {
     super.initState();
     _animationController = AnimationController(
-      duration: const Duration(milliseconds: 1000),
+      duration: const Duration(milliseconds: 1500),
       vsync: this,
     );
     _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
@@ -44,11 +44,16 @@ String? tokens = AppPreference().getString(PreferencesKey.authToken);
         curve: Curves.easeInOut,
       ),
     );
+    _slideAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(
+        parent: _animationController,
+        curve: Curves.easeOutBack,
+      ),
+    );
     _animationController.forward();
     
-    // Load user data and auto-fetch location
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _loadUserData();
+      _autoFetchLocation();
     });
   }
 
@@ -58,18 +63,9 @@ String? tokens = AppPreference().getString(PreferencesKey.authToken);
     super.dispose();
   }
 
-  // Load user data from local storage
-  Future<void> _loadUserData() async {
-    try {
-      _autoFetchLocation();
-    } catch (e) {
-      print("Error loading user data: $e");
-      _autoFetchLocation();
-    }
-  }
-
   Future<void> _autoFetchLocation() async {
     setState(() {
+      _currentStep = 1;
       _isLoading = true;
       _errorMessage = '';
     });
@@ -78,19 +74,16 @@ String? tokens = AppPreference().getString(PreferencesKey.authToken);
       final permission = await Permission.location.status;
       
       if (permission.isGranted) {
+        setState(() => _currentStep = 2);
         await _fetchCurrentLocation();
       } else if (permission.isDenied) {
         setState(() {
           _isLoading = false;
+          _currentStep = 1;
         });
       } else if (permission.isPermanentlyDenied) {
         setState(() {
           _errorMessage = 'Location permission is required. Please enable it from app settings.';
-          _isLoading = false;
-        });
-      } else if (permission.isRestricted) {
-        setState(() {
-          _errorMessage = 'Location access is restricted on your device.';
           _isLoading = false;
         });
       }
@@ -110,6 +103,7 @@ String? tokens = AppPreference().getString(PreferencesKey.authToken);
         setState(() {
           _errorMessage = 'Location services are disabled. Please enable them.';
           _isLoading = false;
+          _currentStep = 1;
         });
         return;
       }
@@ -131,6 +125,7 @@ String? tokens = AppPreference().getString(PreferencesKey.authToken);
           longitude: position.longitude,
           address: address,
         );
+        _currentStep = 3;
       });
 
       // Send location to API
@@ -140,28 +135,29 @@ String? tokens = AppPreference().getString(PreferencesKey.authToken);
       );
 
       if (apiSuccess) {
-        // Auto navigate after getting location and successful API call
-        await Future.delayed(const Duration(milliseconds: 1500));
+        await Future.delayed(const Duration(seconds: 1));
         _navigateToMainScreen();
       } else {
         setState(() {
           _errorMessage = 'Failed to update location on server. Please try again.';
           _isLoading = false;
+          _currentStep = 1;
         });
       }
     } catch (e) {
       setState(() {
         _errorMessage = 'Failed to get location: ${e.toString()}';
         _isLoading = false;
+        _currentStep = 1;
       });
     }
   }
+
   Future<bool> _sendLocationToAPI({
     required double latitude,
     required double longitude,
   }) async {
     try {
-      print("Sending location to API: $latitude, $longitude");
       final response = await http.post(
         Uri.parse('${baseUrl}passenger/location'),
         headers: {
@@ -173,18 +169,13 @@ String? tokens = AppPreference().getString(PreferencesKey.authToken);
           "longitude": longitude,
         }),
       );
-      print("API Response Status: ${response.statusCode}");
-      print("API Response Body: ${response.body}");
+      
       if (response.statusCode == 200 || response.statusCode == 201) {
-        final responseData = json.decode(response.body);
-        print("Location updated successfully: $responseData");
         return true;
       } else {
-        print("API Error: ${response.statusCode} - ${response.body}");
         return false;
       }
     } catch (e) {
-      print("Error sending location to API: $e");
       return false;
     }
   }
@@ -193,23 +184,24 @@ String? tokens = AppPreference().getString(PreferencesKey.authToken);
     setState(() {
       _isLoading = true;
       _errorMessage = '';
+      _currentStep = 1;
     });
 
     try {
       final permission = await Permission.location.request();
 
       if (permission.isGranted) {
+        setState(() => _currentStep = 2);
         await _fetchCurrentLocation();
       } else if (permission.isDenied) {
         setState(() {
-          _errorMessage =
-              'Location permission is required to find nearby vehicles.';
+          _errorMessage = 'Location permission is required to find nearby vehicles.';
           _isLoading = false;
+          _currentStep = 1;
         });
       } else if (permission.isPermanentlyDenied) {
         setState(() {
-          _errorMessage =
-              'Location permission permanently denied. Please enable it from app settings.';
+          _errorMessage = 'Location permission permanently denied. Please enable it from app settings.';
           _isLoading = false;
         });
       }
@@ -247,25 +239,15 @@ String? tokens = AppPreference().getString(PreferencesKey.authToken);
           if (address.isNotEmpty) address += ', ';
           address += place.administrativeArea!;
         }
-        if (place.postalCode != null && place.postalCode!.isNotEmpty) {
-          if (address.isNotEmpty) address += ' - ';
-          address += place.postalCode!;
-        }
-        if (place.country != null && place.country!.isNotEmpty) {
-          if (address.isNotEmpty) address += ', ';
-          address += place.country!;
-        }
 
         return address.isNotEmpty ? address : 'Address not available';
       }
       return 'Address not found';
     } catch (e) {
-      print('Error getting address: $e');
       return 'Unable to fetch address';
     }
   }
 
-  // Navigate to main screen with location data
   void _navigateToMainScreen() {
     if (_autoNavigating || _selectedLocation == null) return;
     
@@ -279,237 +261,391 @@ String? tokens = AppPreference().getString(PreferencesKey.authToken);
         pageBuilder: (context, animation, secondaryAnimation) =>
             MainBottomNav(selectedLocation: _selectedLocation!),
         transitionsBuilder: (context, animation, secondaryAnimation, child) {
-          const begin = Offset(1.0, 0.0);
-          const end = Offset.zero;
-          const curve = Curves.easeInOut;
-          var tween = Tween(begin: begin, end: end).chain(CurveTween(curve: curve));
-          var offsetAnimation = animation.drive(tween);
-
-          return SlideTransition(
-            position: offsetAnimation,
+          return FadeTransition(
+            opacity: animation,
             child: child,
           );
         },
-        transitionDuration: const Duration(milliseconds: 500),
+        transitionDuration: const Duration(milliseconds: 800),
       ),
     );
   }
 
-  Widget _buildLocationInfo() {
-    if (_selectedLocation == null) return const SizedBox();
-    
-    return FadeTransition(
-      opacity: _fadeAnimation,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 10),
-        child: Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: Colors.green[50],
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: Colors.green),
+  Widget _buildStepIndicator() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 30),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          _buildStepCircle(1, "Permission"),
+          Container(
+            height: 2,
+            width: 40,
+            color: _currentStep >= 2 ? Colors.black : Colors.grey.shade300,
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.location_on, color: Colors.green, size: 16),
-                  const SizedBox(width: 8),
-                  Text(
-                    'Selected Location:',
+          _buildStepCircle(2, "Fetching"),
+          Container(
+            height: 2,
+            width: 40,
+            color: _currentStep >= 3 ? Colors.black : Colors.grey.shade300,
+          ),
+          _buildStepCircle(3, "Success"),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStepCircle(int step, String label) {
+    bool isActive = _currentStep >= step;
+    bool isCurrent = _currentStep == step;
+    
+    return Column(
+      children: [
+        Container(
+          width: 36,
+          height: 36,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: isActive ? Colors.black : Colors.grey.shade300,
+            border: isCurrent 
+                ? Border.all(color: Colors.black, width: 3)
+                : null,
+          ),
+          child: Center(
+            child: isActive
+                ? Icon(
+                    Icons.check,
+                    color: Colors.white,
+                    size: 20,
+                  )
+                : Text(
+                    '$step',
                     style: TextStyle(
+                      color: Colors.white,
                       fontWeight: FontWeight.bold,
-                      color: Colors.green[800],
                     ),
                   ),
-                ],
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'Latitude: ${_selectedLocation!.latitude.toStringAsFixed(6)}',
-                style: const TextStyle(fontSize: 12),
-              ),
-              Text(
-                'Longitude: ${_selectedLocation!.longitude.toStringAsFixed(6)}',
-                style: const TextStyle(fontSize: 12),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'Address: ${_selectedLocation!.address ?? "Fetching..."}',
-                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
-              ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  Icon(Icons.check_circle, color: Colors.green, size: 16),
-                  SizedBox(width: 4),
-                  Text(
-                    'Location sent to server',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: Colors.green[700],
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                ],
-              ),
-            ],
           ),
         ),
-      ),
+        const SizedBox(height: 4),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 10,
+            color: isActive ? Colors.black : Colors.grey.shade500,
+            fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
+          ),
+        ),
+      ],
     );
   }
 
   @override
   Widget build(BuildContext context) {
+    final size = MediaQuery.of(context).size;
+    
     return Scaffold(
       backgroundColor: Colors.white,
-      body: SafeArea(
-        child: SingleChildScrollView(
-          child: Column(
-            children: [
-              SlideTransition(
-                position: Tween<Offset>(
-                  begin: const Offset(0, -0.5),
-                  end: Offset.zero,
-                ).animate(_fadeAnimation),
-                child: SizedBox(
-                  height: 300,
-                  width: double.infinity,
-                  child: Image.asset(
-                    "assets/images/welcome.png",
-                    fit: BoxFit.contain,
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 40),
-
-              FadeTransition(
-                opacity: _fadeAnimation,
-                child: const Text(
-                  "Welcome",
-                  style: TextStyle(
-                    fontFamily: 'Inria Serif',
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 8),
-
-              FadeTransition(
-                opacity: _fadeAnimation,
-                child: const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 40),
-                  child: Text(
-                    "Choose your location to start find\nvehicle around you.",
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.grey, fontSize: 14),
-                  ),
-                ),
-              ),
-
-              if (_errorMessage.isNotEmpty)
-                FadeTransition(
-                  opacity: _fadeAnimation,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 30,
-                      vertical: 10,
-                    ),
-                    child: Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.red[50],
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: Colors.red),
-                      ),
-                      child: Text(
-                        _errorMessage,
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.red[800], fontSize: 12),
-                      ),
-                    ),
-                  ),
-                ),
-              
-              _buildLocationInfo(),
-              
-              const SizedBox(height: 20),
-              
-              FadeTransition(
-                opacity: _fadeAnimation,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 30),
-                  child: Column(
-                    children: [
-                      SizedBox(
-                        height: 50,
-                        width: double.infinity,
-                        child: ElevatedButton.icon(
-                          icon: _isLoading
-                              ? const SizedBox(
-                                  height: 20,
-                                  width: 20,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    valueColor: AlwaysStoppedAnimation<Color>(
-                                      Colors.white,
-                                    ),
-                                  ),
-                                )
-                              : Image.asset(
-                                  "assets/images/Path.png",
-                                  height: 20,
-                                  width: 20,
-                                  color: Colors.white,
-                                ),
-                          label: _isLoading
-                              ? const Text("Fetching location...")
-                              : const Text("Use current location"),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.blue,
-                            foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                          ),
-                          onPressed:
-                              _isLoading ? null : _checkAndRequestLocationPermission,
-                        ),
-                      ),
-                      
-                      const SizedBox(height: 16),
-                      
-                      // Manual Location Input (Optional)
-                      SizedBox(
-                        height: 50,
-                        width: double.infinity,
-                        child: OutlinedButton.icon(
-                          icon: const Icon(Icons.search, size: 20),
-                          label: const Text("Enter location manually"),
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: Colors.blue,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            side: const BorderSide(color: Colors.blue),
-                          ),
-                          onPressed: () {
-                            _showManualLocationDialog();
-                          },
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
+      body: Stack(
+        children: [
+          // Background Pattern
+          Positioned.fill(
+            child: CustomPaint(
+              painter: _LocationBackgroundPainter(),
+            ),
           ),
-        ),
+          
+          SafeArea(
+            child: SingleChildScrollView(
+              child: SizedBox(
+                height: size.height - MediaQuery.of(context).padding.top,
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    // Top Section
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 30),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            // Animated Location Icon
+                            ScaleTransition(
+                              scale: _slideAnimation,
+                              child: Container(
+                                width: 150,
+                                height: 150,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: Colors.black.withOpacity(0.05),
+                                  border: Border.all(
+                                    color: Colors.black.withOpacity(0.1),
+                                    width: 2,
+                                  ),
+                                ),
+                                child: Stack(
+                                  alignment: Alignment.center,
+                                  children: [
+                                    Icon(
+                                      Icons.location_on,
+                                      size: 70,
+                                      color: Colors.black,
+                                    ),
+                                    if (_currentStep == 2)
+                                      Positioned.fill(
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 3,
+                                          color: Colors.black,
+                                        ),
+                                      ),
+                                    if (_currentStep == 3)
+                                      Positioned(
+                                        bottom: 10,
+                                        right: 10,
+                                        child: Container(
+                                          padding: const EdgeInsets.all(6),
+                                          decoration: BoxDecoration(
+                                            color: Colors.green,
+                                            shape: BoxShape.circle,
+                                          ),
+                                          child: Icon(
+                                            Icons.check,
+                                            color: Colors.white,
+                                            size: 20,
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            
+                            const SizedBox(height: 40),
+                            
+                            // Title
+                            FadeTransition(
+                              opacity: _fadeAnimation,
+                              child: Text(
+                                _currentStep == 3 
+                                    ? "Location Found!"
+                                    : "Location Access",
+                                style: TextStyle(
+                                  fontSize: 32,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.black,
+                                  letterSpacing: 0.5,
+                                ),
+                                textAlign: TextAlign.center,
+                              ),
+                            ),
+                            
+                            const SizedBox(height: 16),
+                            
+                            // Description
+                            FadeTransition(
+                              opacity: _fadeAnimation,
+                              child: Text(
+                                _currentStep == 1
+                                    ? "We need your location to show vehicles\naround you and provide accurate services."
+                                    : _currentStep == 2
+                                        ? "Fetching your current location...\nThis may take a few seconds."
+                                        : "Great! We've found your location.\nRedirecting to main screen...",
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  color: Colors.grey.shade600,
+                                  height: 1.5,
+                                ),
+                              ),
+                            ),
+                            
+                            const SizedBox(height: 40),
+                            
+                            // Step Indicator
+                            _buildStepIndicator(),
+                            
+                            const SizedBox(height: 30),
+                            
+                            // Location Preview
+                            // if (_selectedLocation != null)
+                            //   FadeTransition(
+                            //     opacity: _fadeAnimation,
+                            //     child: Container(
+                            //       width: double.infinity,
+                            //       padding: const EdgeInsets.all(16),
+                            //       decoration: BoxDecoration(
+                            //         color: Colors.green.shade50,
+                            //         borderRadius: BorderRadius.circular(16),
+                            //         border: Border.all(color: Colors.green.shade100),
+                            //       ),
+                            //       child: Column(
+                            //         crossAxisAlignment: CrossAxisAlignment.start,
+                            //         children: [
+                            //           Row(
+                            //             children: [
+                            //               Icon(
+                            //                 Icons.location_pin,
+                            //                 color: Colors.green.shade700,
+                            //                 size: 20,
+                            //               ),
+                            //               const SizedBox(width: 8),
+                            //               Text(
+                            //                 "Current Location",
+                            //                 style: TextStyle(
+                            //                   fontWeight: FontWeight.bold,
+                            //                   color: Colors.green.shade800,
+                            //                   fontSize: 14,
+                            //                 ),
+                            //               ),
+                            //             ],
+                            //           ),
+                            //           const SizedBox(height: 8),
+                            //           Text(
+                            //             _selectedLocation!.address ?? "Fetching address...",
+                            //             style: TextStyle(
+                            //               color: Colors.green.shade700,
+                            //               fontSize: 13,
+                            //             ),
+                            //           ),
+                            //         ],
+                            //       ),
+                            //     ),
+                            //   ),
+                            
+                            // Error Message
+                            if (_errorMessage.isNotEmpty)
+                              FadeTransition(
+                                opacity: _fadeAnimation,
+                                child: Container(
+                                  width: double.infinity,
+                                  margin: const EdgeInsets.only(top: 20),
+                                  padding: const EdgeInsets.all(16),
+                                  decoration: BoxDecoration(
+                                    color: Colors.red.shade50,
+                                    borderRadius: BorderRadius.circular(16),
+                                    border: Border.all(color: Colors.red.shade100),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Icon(
+                                        Icons.error_outline,
+                                        color: Colors.red.shade700,
+                                        size: 20,
+                                      ),
+                                      const SizedBox(width: 12),
+                                      Expanded(
+                                        child: Text(
+                                          _errorMessage,
+                                          style: TextStyle(
+                                            color: Colors.red.shade700,
+                                            fontSize: 13,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    
+                    // Bottom Button Section
+                    Padding(
+                      padding: const EdgeInsets.all(30),
+                      child: Column(
+                        children: [
+                          // Main Action Button
+                          SizedBox(
+                            width: double.infinity,
+                            height: 56,
+                            child: ElevatedButton(
+                              onPressed: _isLoading ? null : _checkAndRequestLocationPermission,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.black,
+                                foregroundColor: Colors.white,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(16),
+                                ),
+                                elevation: 0,
+                                shadowColor: Colors.transparent,
+                              ),
+                              child: _isLoading
+                                  ? Row(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        SizedBox(
+                                          width: 20,
+                                          height: 20,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            color: Colors.white,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 12),
+                                        Text(
+                                          _currentStep == 2 
+                                              ? "Fetching Location..." 
+                                              : "Processing...",
+                                          style: TextStyle(
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ],
+                                    )
+                                  : Text(
+                                      _currentStep == 3 
+                                          ? "Continue to App"
+                                          : "Allow Location Access",
+                                      style: TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                            ),
+                          ),
+                          
+                          const SizedBox(height: 16),
+                          
+                          // Alternative Option
+                          TextButton(
+                            onPressed: () {
+                              _showManualLocationDialog();
+                            },
+                            style: TextButton.styleFrom(
+                              foregroundColor: Colors.black,
+                            ),
+                            child: const Text(
+                              "Enter location manually",
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                                decoration: TextDecoration.underline,
+                              ),
+                            ),
+                          ),
+                          
+                          // Privacy Info
+                          const SizedBox(height: 20),
+                          Text(
+                            "Your location data is used only to find nearby\nvehicles and is never shared with third parties.",
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Colors.grey.shade500,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -518,37 +654,41 @@ String? tokens = AppPreference().getString(PreferencesKey.authToken);
     showDialog(
       context: context,
       builder: (context) {
-        String manualLatitude = '';
-        String manualLongitude = '';
         String manualAddress = '';
         
         return AlertDialog(
-          title: const Text("Enter Location Manually"),
+          title: Row(
+            children: [
+              Icon(Icons.location_searching, color: Colors.black),
+              SizedBox(width: 8),
+              Text(
+                "Manual Location",
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              TextField(
-                decoration: const InputDecoration(
-                  labelText: 'Latitude',
-                  hintText: 'e.g., 19.0760',
+              Text(
+                "Enter your location name to continue:",
+                style: TextStyle(
+                  color: Colors.grey.shade600,
                 ),
-                keyboardType: TextInputType.numberWithOptions(decimal: true),
-                onChanged: (value) => manualLatitude = value,
               ),
-              const SizedBox(height: 12),
+              SizedBox(height: 16),
               TextField(
-                decoration: const InputDecoration(
-                  labelText: 'Longitude',
-                  hintText: 'e.g., 72.8777',
-                ),
-                keyboardType: TextInputType.numberWithOptions(decimal: true),
-                onChanged: (value) => manualLongitude = value,
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                decoration: const InputDecoration(
-                  labelText: 'Address (Optional)',
-                  hintText: 'e.g., Mumbai, Maharashtra',
+                decoration: InputDecoration(
+                  hintText: 'e.g., Mumbai Central, Maharashtra',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  contentPadding: EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 14,
+                  ),
                 ),
                 onChanged: (value) => manualAddress = value,
               ),
@@ -557,66 +697,72 @@ String? tokens = AppPreference().getString(PreferencesKey.authToken);
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
+              child: Text('Cancel'),
             ),
             ElevatedButton(
               onPressed: () async {
-                if (manualLatitude.isNotEmpty && manualLongitude.isNotEmpty) {
-                  try {
-                    final double lat = double.parse(manualLatitude);
-                    final double lng = double.parse(manualLongitude);
-                    
-                    Navigator.pop(context);
-                    
-                    setState(() {
-                      _isLoading = true;
-                      _errorMessage = '';
-                    });
-                    
-                    // Send manual location to API
-                    final bool apiSuccess = await _sendLocationToAPI(
-                      latitude: lat,
-                      longitude: lng,
+                if (manualAddress.isNotEmpty) {
+                  Navigator.pop(context);
+                  
+                  setState(() {
+                    _selectedLocation = SelectedLocation(
+                      latitude: 19.0760, // Default coordinates for Mumbai
+                      longitude: 72.8777,
+                      address: manualAddress,
                     );
-                    
-                    if (apiSuccess) {
-                      setState(() {
-                        _selectedLocation = SelectedLocation(
-                          latitude: lat,
-                          longitude: lng,
-                          address: manualAddress.isNotEmpty 
-                              ? manualAddress 
-                              : 'Manual Location',
-                        );
-                        _isLoading = false;
-                      });
-                      
-                      await Future.delayed(const Duration(milliseconds: 1500));
-                      _navigateToMainScreen();
-                    } else {
-                      setState(() {
-                        _errorMessage = 'Failed to update location on server.';
-                        _isLoading = false;
-                      });
-                    }
-                  } catch (e) {
-                    setState(() {
-                      _errorMessage = 'Invalid coordinates. Please enter valid numbers.';
-                      _isLoading = false;
-                    });
+                    _currentStep = 3;
+                  });
+                  
+                  // Send to API
+                  final bool apiSuccess = await _sendLocationToAPI(
+                    latitude: 19.0760,
+                    longitude: 72.8777,
+                  );
+                  
+                  if (apiSuccess) {
+                    await Future.delayed(const Duration(seconds: 1));
+                    _navigateToMainScreen();
                   }
                 }
               },
-              child: const Text('Save & Continue'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.black,
+              ),
+              child: Text('Use This Location'),
             ),
           ],
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
         );
       },
     );
   }
 }
 
-// location_model.dart
+// Custom Background Painter
+class _LocationBackgroundPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.black.withOpacity(0.02)
+      ..style = PaintingStyle.fill;
+    
+    // Draw background circles
+    for (int i = 0; i < 5; i++) {
+      final radius = (i + 1) * 80.0;
+      canvas.drawCircle(
+        Offset(size.width / 2, size.height * 0.3),
+        radius,
+        paint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
 class SelectedLocation {
   final double latitude;
   final double longitude;
@@ -629,7 +775,11 @@ class SelectedLocation {
   });
 
   Map<String, dynamic> toMap() {
-    return {'latitude': latitude, 'longitude': longitude, 'address': address};
+    return {
+      'latitude': latitude,
+      'longitude': longitude,
+      'address': address,
+    };
   }
 
   static SelectedLocation fromMap(Map<String, dynamic> map) {

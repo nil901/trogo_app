@@ -346,12 +346,13 @@ import 'package:trogo_app/main_bottom_nav.dart';
 import 'package:trogo_app/models/bannar_model.dart';
 import 'package:trogo_app/models/estimateurl_model.dart';
 import 'package:trogo_app/models/history_model.dart';
+import 'package:trogo_app/models/notifaction_model.dart';
+import 'package:trogo_app/models/summary_model.dart';
 import 'package:trogo_app/models/transport_vihcle_type_model.dart';
 import 'package:trogo_app/models/vehicle_type_model.dart';
 import 'package:trogo_app/otp_screen.dart';
 import 'package:trogo_app/prefs/PreferencesKey.dart';
 import 'package:trogo_app/prefs/app_preference.dart';
-
 
 final loginProvider = StateNotifierProvider<LoginNotifier, AsyncValue<void>>((
   ref,
@@ -366,8 +367,8 @@ class LoginNotifier extends StateNotifier<AsyncValue<void>> {
     state = const AsyncValue.loading();
     try {
       final response = await ApiService().postRequest(loginEndPoint, {
-        "email":stId,
-        "password":password,
+        "email": stId,
+        "password": password,
         "type": "user",
       });
 
@@ -381,17 +382,30 @@ class LoginNotifier extends StateNotifier<AsyncValue<void>> {
 
         final user = responseData['user'];
 
-     
-
         // await AppPreference().setBool("IS_LOGGED_IN", true);
 
-        await AppPreference().setString(PreferencesKey.authToken, response!.data['token']);
+        await AppPreference().setString(
+          PreferencesKey.authToken,
+          response!.data['token'],
+        );
         await AppPreference().setString(PreferencesKey.userId, user['_id']);
         await AppPreference().setString(PreferencesKey.userName, user['name']);
-        await AppPreference().setString(PreferencesKey.userEmail, user['email']);
-        await AppPreference().setString(PreferencesKey.userMobile, user['mobile']);
-        await AppPreference().setString(PreferencesKey.userGender, user['gender']);
-        await AppPreference().setString(PreferencesKey.userProfileImage, user['profileImage']??"");
+        await AppPreference().setString(
+          PreferencesKey.userEmail,
+          user['email'],
+        );
+        await AppPreference().setString(
+          PreferencesKey.userMobile,
+          user['mobile'],
+        );
+        await AppPreference().setString(
+          PreferencesKey.userGender,
+          user['gender'],
+        );
+        await AppPreference().setString(
+          PreferencesKey.userProfileImage,
+          user['profileImage'] ?? "",
+        );
 
         state = const AsyncValue.data(null);
 
@@ -414,13 +428,37 @@ class LoginNotifier extends StateNotifier<AsyncValue<void>> {
     }
   }
 }
-final bannerCategoriesProvider = StateProvider<List<BannerCategory>>((ref) => []);
+
+final bannerCategoriesProvider = StateProvider<List<BannerCategory>>(
+  (ref) => [],
+);
+final notifactionProvider = StateProvider<List<AppNotification>>((ref) => []);
 final bannersProvider = StateProvider<List<Banners>>((ref) => []);
 final selectedCategoryProvider = StateProvider<String>((ref) => '');
 final vihicletypeProvider = StateProvider<List<VehicleType>>((ref) => []);
 
-final transdportVihicletypeProvider = StateProvider<List<TransportVehicle>>((ref) => []);
+final transdportVihicletypeProvider = StateProvider<List<TransportVehicle>>(
+  (ref) => [],
+);
 
+Future<List<AppNotification>> notifactionpesApi(WidgetRef ref) async {
+  try {
+    final response = await ApiService().getRequest(noticationGet);
+
+    if (response != null && response.statusCode == 200) {
+      final data = response.data['notifications'] as List;
+      final notifaction =
+          data.map((json) => AppNotification.fromJson(json)).toList();
+      ref.read(notifactionProvider.notifier).state = notifaction;
+      return notifaction;
+    } else {
+      throw Exception(response?.data['message'] ?? "Something went wrong.");
+    }
+  } catch (e) {
+    print("Error fetching Suggestions: $e");
+  }
+  return [];
+}
 
 Future<List<TransportVehicle>> transportVehicletypesApi(WidgetRef ref) async {
   try {
@@ -428,7 +466,8 @@ Future<List<TransportVehicle>> transportVehicletypesApi(WidgetRef ref) async {
 
     if (response != null && response.statusCode == 200) {
       final data = response.data['vehicles'] as List;
-      final bannar = data.map((json) => TransportVehicle.fromJson(json)).toList();
+      final bannar =
+          data.map((json) => TransportVehicle.fromJson(json)).toList();
       ref.read(transdportVihicletypeProvider.notifier).state = bannar;
       return bannar;
     } else {
@@ -440,9 +479,40 @@ Future<List<TransportVehicle>> transportVehicletypesApi(WidgetRef ref) async {
   return [];
 }
 
-Future<List<VehicleType>> vehicletypesApi(WidgetRef ref) async {
+final passengerSummaryProvider = StateProvider<PassengerSummary?>(
+  (ref) => null,
+);
+Future<PassengerSummary?> passengerSummaryApi(WidgetRef ref) async {
   try {
-    final response = await ApiService().getRequest(vehicletypes);
+    final response = await ApiService().getRequest(
+      '${baseUrl}passenger/summary',
+    );
+
+    if (response != null && response.statusCode == 200) {
+      final data = response.data['summary'];
+
+      final summary = PassengerSummary.fromJson(data);
+
+      /// 🔥 Riverpod state update (same as vehicleTypes)
+      ref.read(passengerSummaryProvider.notifier).state = summary;
+
+      return summary;
+    } else {
+      throw Exception(response?.data['message'] ?? "Something went wrong.");
+    }
+  } catch (e) {
+    print("❌ Error fetching passenger summary: $e");
+  }
+  return null;
+}
+
+Future<List<VehicleType>> vehicletypesApi(WidgetRef ref, type) async {
+  // ref.read(vihicletypeProvider.notifier).state = [];
+  log("${vehicletypes}category=${type}");
+  try {
+    final response = await ApiService().getRequest(
+      "${vehicletypes}category=${type}",
+    );
 
     if (response != null && response.statusCode == 200) {
       final data = response.data['vehicleTypes'] as List;
@@ -457,15 +527,19 @@ Future<List<VehicleType>> vehicletypesApi(WidgetRef ref) async {
   }
   return [];
 }
+
 final bookingHistoryProvider = StateProvider<List<BookingHistory>>((ref) => []);
 
 Future<List<BookingHistory>> getBookingHistoryApi(WidgetRef ref) async {
   try {
-    final response = await ApiService().getRequest(history); // अपना endpoint adjust करें
-    
+    final response = await ApiService().getRequest(
+      history,
+    ); // अपना endpoint adjust करें
+
     if (response != null && response.statusCode == 200) {
       final data = response.data['bookings'] as List;
-      final bookings = data.map((json) => BookingHistory.fromJson(json)).toList();
+      final bookings =
+          data.map((json) => BookingHistory.fromJson(json)).toList();
       ref.read(bookingHistoryProvider.notifier).state = bookings;
       return bookings;
     } else {
@@ -477,73 +551,72 @@ Future<List<BookingHistory>> getBookingHistoryApi(WidgetRef ref) async {
   return [];
 }
 
-
 Future<List<BannerCategory>> getBannerCategories() async {
-    try {
-      final response = await ApiService().getRequest('${baseUrl}/api/admin/banners/category');
-      
-      if (response != null && response.statusCode == 200) {
-        final data = response.data['categories'] as List;
-        return data.map((json) => BannerCategory.fromJson(json)).toList();
-      }
-      return [];
-    } catch (e) {
-      print("Error fetching banner categories: $e");
-      return [];
-    }
-  }
-  
-  Future<List<Banners>> getBannersByCategory(String categoryId) async {
-    try {
-      final response = await ApiService().getRequest('${baseUrl}/api/admin/banners?categoryId=$categoryId');
-      
-      if (response != null && response.statusCode == 200) {
-        final data = response.data['banners'] as List;
-        return data.map((json) => Banners.fromJson(json)).toList();
-      }
-      return [];
-    } catch (e) {
-      print("Error fetching banners: $e");
-      return [];
-    }
-  }
-
-
-
-  final fareEstimateProvider =
-    StateProvider<List<FareEstimate>>((ref) => []);
-Future<List<FareEstimate>> fareEstimateApi({
-  required WidgetRef ref,
-  required String vehicleTypeId,
-  required String pickupAddress,
-  required List<double> pickupCoordinates,
-  required String dropAddress,
-  required List<double> dropCoordinates,
-}) async {
   try {
-    final body = {
-      "category": "passenger",
-      "vehicleTypeId": vehicleTypeId,
-      "pickup": {
-        "address": pickupAddress,
-        "coordinates": pickupCoordinates,
-      },
-      "drop": {
-        "address": dropAddress,
-        "coordinates": dropCoordinates,
-      }
-    };
-
-    final response = await ApiService().postRequest(
-      fareEstimateUrl, // {{baseUrl}}/api/passenger/fare-estimate
-       body,
+    final response = await ApiService().getRequest(
+      '${baseUrl}/api/admin/banners/category',
     );
 
     if (response != null && response.statusCode == 200) {
+      final data = response.data['categories'] as List;
+      return data.map((json) => BannerCategory.fromJson(json)).toList();
+    }
+    return [];
+  } catch (e) {
+    print("Error fetching banner categories: $e");
+    return [];
+  }
+}
+
+Future<List<Banners>> getBannersByCategory(String categoryId) async {
+  try {
+    final response = await ApiService().getRequest(
+      '${baseUrl}/api/admin/banners?categoryId=$categoryId',
+    );
+
+    if (response != null && response.statusCode == 200) {
+      final data = response.data['banners'] as List;
+      return data.map((json) => Banners.fromJson(json)).toList();
+    }
+    return [];
+  } catch (e) {
+    print("Error fetching banners: $e");
+    return [];
+  }
+}
+
+final fareEstimateProvider = StateProvider<List<FareEstimate>>((ref) => []);
+Future<List<FareEstimate>> fareEstimateApi({
+  required WidgetRef ref,
+  required String vehicleTypeId,
+  required String category,
+  required String pickupAddress,
+  required List<double> pickupCoordinates,
+  required String dropAddress,
+  
+  required List<double> dropCoordinates,
+}) async {
+  // passenger
+  print("mdksdmksdksds ${fareEstimateUrl}");
+  try {
+    final body = {
+      "category": "${category}",
+      "vehicleTypeId": vehicleTypeId,
+      "pickup": {"address": pickupAddress, "coordinates": pickupCoordinates},
+      "drop": {"address": dropAddress, "coordinates": dropCoordinates},
+    };
+    
+    final response = await ApiService().postRequest(
+      fareEstimateUrl, // {{baseUrl}}/api/passenger/fare-estimate
+      body,
+    );
+    print(fareEstimateUrl);
+    print(body);
+    
+    if (response != null && response.statusCode == 200) {
       final List data = response.data['vehicles'];
 
-      final fares =
-          data.map((json) => FareEstimate.fromJson(json)).toList();
+      final fares = data.map((json) => FareEstimate.fromJson(json)).toList();
 
       ref.read(fareEstimateProvider.notifier).state = fares;
 

@@ -1,9 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:developer';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
 import 'package:http/http.dart' as http;
+import 'package:trogo_app/api_service/urls.dart';
+import 'package:trogo_app/prefs/PreferencesKey.dart';
+import 'package:trogo_app/prefs/app_preference.dart';
 
 class Banner {
   final String id;
@@ -32,9 +36,7 @@ class Banner {
 }
 
 class ApiService {
-  static const String baseUrl = "https://trogo-app-backend.onrender.com";
-  static const String token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY5MmE5YTY5YTVmNmE1YjZjM2RhNmViMiIsInR5cGUiOiJhZG1pbiIsImlhdCI6MTc2NjQ2MjUyMywiZXhwIjoxNzY3MDY3MzIzfQ.Hxl4GIzrge0EMGPE6GU4dNqB6cHAMv_mNwjzc5aOoKw";
-  
+
   // सभी categories के banners fetch करें
   Future<List<Banner>> getAllBanners() async {
     try {
@@ -42,10 +44,10 @@ class ApiService {
       
       // 1. सभी categories fetch करें
       final categoriesResponse = await http.get(
-        Uri.parse('$baseUrl/api/admin/banners/category'),
+        Uri.parse('${baseUrl}admin/banners/category/public'),
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
+          // 'Authorization': 'Bearer ${AppPreference().getString(PreferencesKey.authToken).toString()}',
         },
       );
       
@@ -75,10 +77,10 @@ class ApiService {
         
         try {
           final bannersResponse = await http.get(
-            Uri.parse('$baseUrl/api/admin/banners?categoryId=$categoryId'),
+            Uri.parse('${baseUrl}admin/banners/public?categoryId=$categoryId'),
             headers: {
               'Content-Type': 'application/json',
-              'Authorization': 'Bearer $token',
+              // 'Authorization': 'Bearer ${AppPreference().getString(PreferencesKey.authToken).toString()}',
             },
           );
           
@@ -117,10 +119,10 @@ class ApiService {
     try {
       // 1. सभी categories fetch करें
       final categoriesResponse = await http.get(
-        Uri.parse('$baseUrl/api/admin/banners/category'),
+        Uri.parse('${baseUrl}admin/banners/category/public'),
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
+          'Authorization': 'Bearer ${AppPreference().getString(PreferencesKey.authToken).toString()}',
         },
       );
       
@@ -139,10 +141,10 @@ class ApiService {
         
         // Type को स्पष्ट रूप से define करें
         Future<List<Banner>> bannerFuture = http.get(
-          Uri.parse('$baseUrl/api/admin/banners?categoryId=$categoryId'),
+          Uri.parse('${baseUrl}admin/banners/public?categoryId=$categoryId'),
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': 'Bearer $token',
+            // 'Authorization': 'Bearer ${AppPreference().getString(PreferencesKey.authToken).toString()}',
           },
         ).then((http.Response response) {
           if (response.statusCode == 200) {
@@ -179,13 +181,13 @@ class ApiService {
     try {
       // 1. Get categories
       final categoriesResponse = await http.get(
-        Uri.parse('$baseUrl/api/admin/banners/category'),
+        Uri.parse('${baseUrl}admin/banners/category/public'),
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
+          // 'Authorization': 'Bearer ${AppPreference().getString(PreferencesKey.authToken).toString()}',
         },
       );
-      
+      print(categoriesResponse.body);
       if (categoriesResponse.statusCode != 200) return [];
       
       final categoriesData = json.decode(categoriesResponse.body);
@@ -198,13 +200,13 @@ class ApiService {
         final categoryId = category['_id'];
         
         final bannersResponse = await http.get(
-          Uri.parse('$baseUrl/api/admin/banners?categoryId=$categoryId'),
+          Uri.parse('${baseUrl}admin/banners/public?categoryId=$categoryId'),
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': 'Bearer $token',
+            // 'Authorization': 'Bearer ${AppPreference().getString(PreferencesKey.authToken).toString()}',
           },
         );
-        
+        print(bannersResponse.statusCode);
         if (bannersResponse.statusCode == 200) {
           final bannersData = json.decode(bannersResponse.body);
           final bannersList = bannersData['banners'] as List;
@@ -307,6 +309,7 @@ class AllBannersWidget extends ConsumerWidget {
   }
 
   Widget _buildBanners(List<Banner> banners) {
+    log("${banners}");
     if (banners.isEmpty) {
       return SizedBox(
         height: 170,

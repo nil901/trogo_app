@@ -1,12 +1,34 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/material.dart';
+import 'package:trogo_app/MyRidesHistoryPage.dart';
+import 'package:trogo_app/auth/login_notifier.dart';
+import 'package:trogo_app/auth/notication_screen.dart';
+import 'package:trogo_app/location_permission_screen.dart';
+import 'package:trogo_app/rider_book_screen.dart';
 import 'package:trogo_app/schedule_delivery_page.dart';
+import 'package:trogo_app/transportergoods/transproter_first_screen.dart';
 
+class GoodsTransportPage extends ConsumerStatefulWidget {
+  const GoodsTransportPage({super.key, required this.selectedLocation});
+  final SelectedLocation selectedLocation;
 
-class GoodsTransportPage extends StatelessWidget {
-  const GoodsTransportPage({super.key});
+  @override
+  ConsumerState<GoodsTransportPage> createState() => _GoodsTransportPageState();
+}
+
+class _GoodsTransportPageState extends ConsumerState<GoodsTransportPage> {
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ref.read(bookingHistoryProvider.notifier).state = [];
+      getBookingHistoryApi(ref);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
+    final bookings = ref.watch(bookingHistoryProvider);
+
     return Scaffold(
       backgroundColor: Colors.white,
 
@@ -18,80 +40,108 @@ class GoodsTransportPage extends StatelessWidget {
           "Goods Transport",
           style: TextStyle(color: Colors.black, fontWeight: FontWeight.w600),
         ),
-        actions: const [
-          Icon(Icons.notifications, color: Colors.black),
-          SizedBox(width: 16),
+        actions: [
+          InkWell(
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const NotificationScreen(),
+                ),
+              );
+            },
+            child: const Icon(Icons.notifications, color: Colors.black),
+          ),
+          const SizedBox(width: 16),
         ],
       ),
 
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.symmetric(horizontal: 20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const SizedBox(height: 10),
-
-            const Text(
-              "What would you like to do?",
-              style: TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-                color: Colors.black87,
-              ),
-            ),
-
-            const SizedBox(height: 14),
-
-            /// ---------------- SEND GOODS ----------------
-            _optionCard(
-              title: "Send Goods Transport",
-              subtitle: "Send with city limit",
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => const ScheduleDeliveryPage(),
-                  ),
-                );
-              },
-            ),
-
-            const SizedBox(height: 14),
-
-            /// ---------------- RECEIVE GOODS ----------------
-            _optionCard(
-              title: "Receive Goods Transport",
-              subtitle: "Get parcel within city limit",
-              onTap: () {},
-            ),
-
-            const SizedBox(height: 20),
-
-            /// ---------------- HISTORY HEADER ----------------
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          /// 🔹 TOP FIXED CONTENT
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                const SizedBox(height: 10),
+
                 const Text(
-                  "History",
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-                ),
-                Text(
-                  "View all",
+                  "What would you like to do?",
                   style: TextStyle(
-                    color: Colors.green.shade700,
-                    fontWeight: FontWeight.w500,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.black87,
                   ),
                 ),
+
+                const SizedBox(height: 14),
+
+                _optionCard(
+                  title: "Send Goods Transport",
+                  subtitle: "Send with city limit",
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder:
+                            (_) => RideHomePage(
+                              isGoodsTransport: true,
+                              currentLocation: widget.selectedLocation,
+                            ),
+                      ),
+                    );
+                  },
+                ),
+
+                const SizedBox(height: 20),
+
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      "History",
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    Text(
+                      "View all",
+                      style: TextStyle(
+                        color: Colors.green.shade700,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
+
+                const SizedBox(height: 10),
               ],
             ),
+          ),
 
-            const SizedBox(height: 10),
-
-            /// HISTORY CARDS
-            _historyCard(),
-            _historyCard(),
-          ],
-        ),
+          /// 🔹 ONLY LIST SCROLLS
+          Expanded(
+            child:
+                bookings.isEmpty
+                    ? const Center(child: CircularProgressIndicator())
+                    : RefreshIndicator(
+                      onRefresh: () async {
+                        await getBookingHistoryApi(ref);
+                      },
+                      child: ListView.separated(
+                        padding: const EdgeInsets.symmetric(horizontal: 20),
+                        itemCount: bookings.length,
+                        separatorBuilder: (_, __) => const SizedBox(height: 14),
+                        itemBuilder: (context, index) {
+                          return BookingCard(booking: bookings[index]);
+                        },
+                      ),
+                    ),
+          ),
+        ],
       ),
     );
   }

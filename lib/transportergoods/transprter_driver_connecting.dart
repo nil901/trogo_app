@@ -12,7 +12,7 @@ import 'package:trogo_app/location_permission_screen.dart';
 import 'package:trogo_app/prefs/PreferencesKey.dart';
 import 'package:trogo_app/prefs/app_preference.dart';
 
-class DriverConnectingUI extends StatefulWidget {
+class TransprterDriverConnectingUI extends StatefulWidget {
   final VoidCallback onBack;
   final String rideType;
   final String? carId;
@@ -27,7 +27,7 @@ class DriverConnectingUI extends StatefulWidget {
   final Widget? mapWidget;
   final Function(Map<String, dynamic>, LatLng, double, String?)? onDriverUpdate;
 
-  const DriverConnectingUI({
+  const TransprterDriverConnectingUI({
     super.key,
     required this.onBack,
     required this.rideType,
@@ -45,10 +45,10 @@ class DriverConnectingUI extends StatefulWidget {
   });
 
   @override
-  _DriverConnectingUIState createState() => _DriverConnectingUIState();
+  _TransprterDriverConnectingUIState createState() => _TransprterDriverConnectingUIState();
 }
 
-class _DriverConnectingUIState extends State<DriverConnectingUI> {
+class _TransprterDriverConnectingUIState extends State<TransprterDriverConnectingUI> {
   // Timer & State Variables
   int _connectionTime = 0;
   bool _isConnecting = false;

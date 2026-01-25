@@ -1,3 +1,4 @@
+// goods_details_page.dart
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -5,13 +6,12 @@ import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:trogo_app/api_service/urls.dart';
-import 'package:trogo_app/courier_tracking_page.dart';
-import 'package:intl/intl.dart';
-import 'dart:convert';
 import 'package:http/http.dart' as http;
-import 'package:trogo_app/prefs/PreferencesKey.dart';
+import 'dart:convert';
+import 'package:intl/intl.dart';
 import 'package:trogo_app/prefs/app_preference.dart';
+import 'package:trogo_app/prefs/PreferencesKey.dart';
+import 'package:trogo_app/transportergoods/tracking_screen.dart';
 
 class GoodsDetailsPage extends StatefulWidget {
   final String pickupLocation;
@@ -21,6 +21,7 @@ class GoodsDetailsPage extends StatefulWidget {
   final int selectedVehicle;
   final Position? pickupPosition;
   final Position? deliveryPosition;
+  final Function(String, Map<String, dynamic>)? onBookingCreated;
 
   const GoodsDetailsPage({
     Key? key,
@@ -31,6 +32,7 @@ class GoodsDetailsPage extends StatefulWidget {
     required this.selectedVehicle,
     this.pickupPosition,
     this.deliveryPosition,
+    this.onBookingCreated,
   }) : super(key: key);
 
   @override
@@ -38,41 +40,64 @@ class GoodsDetailsPage extends StatefulWidget {
 }
 
 class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
-  String payer = "recipient"; // Default to recipient
-  String paymentType = "cash"; // Default to cash
-  
-  // Goods details
+  // Form fields
+  String payer = "recipient";
+  String paymentType = "cash";
   String goodsName = "";
   String goodsWeight = "";
   String weightUnit = "KG";
-  List<String> weightUnits = ["KG", "NOS", "QUINTLE", "TON"];
-  
-  // Receiver details
+  List<String> weightUnits = ["KG", "TON", "QUINTLE", "NOS"];
   String receiverName = "";
   String receiverPhone = "";
-  
-  // Image - Multiple images support
+
+  // Images
   List<File> pickedImages = [];
   final ImagePicker _picker = ImagePicker();
-  
-  // Form key
-  final _formKey = GlobalKey<FormState>();
-  
-  // Loading state
-  bool isSubmitting = false;
 
-  /// 📸 CAMERA + PERMISSION - MULTIPLE IMAGES
+  // Form and state
+  final _formKey = GlobalKey<FormState>();
+  bool isSubmitting = false;
+  String? _bookingId;
+
+  // Fare calculation
+  double _estimatedFare = 0.0;
+  Timer? _fareTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _calculateFare();
+    _fareTimer = Timer.periodic(Duration(seconds: 10), (timer) {
+      _calculateFare();
+    });
+  }
+
+  @override
+  void dispose() {
+    _fareTimer?.cancel();
+    super.dispose();
+  }
+
+  void _calculateFare() {
+    double baseFare = 100.0;
+    double weightValue = double.tryParse(goodsWeight) ?? 0;
+    double weightMultiplier = weightValue * 5;
+    double vehicleMultiplier = (widget.selectedVehicle + 1) * 50.0;
+
+    setState(() {
+      _estimatedFare = baseFare + weightMultiplier + vehicleMultiplier;
+    });
+  }
+
   Future<void> pickImagesFromCamera() async {
     final status = await Permission.camera.request();
-
     if (!status.isGranted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Please allow camera permission")),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text("Please allow camera permission")));
       return;
     }
 
-    // Allow multiple images
     final List<XFile>? images = await _picker.pickMultiImage(
       imageQuality: 85,
       maxWidth: 1920,
@@ -82,7 +107,6 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
     if (images != null && images.isNotEmpty) {
       setState(() {
         pickedImages.addAll(images.map((xfile) => File(xfile.path)).toList());
-        // Limit to 3 images as per your curl command
         if (pickedImages.length > 3) {
           pickedImages = pickedImages.sublist(0, 3);
         }
@@ -90,25 +114,19 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
     }
   }
 
-  /// 📤 SUBMIT BOOKING - UPDATED FOR YOUR API
   Future<void> _submitBooking() async {
     if (!_formKey.currentState!.validate()) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Please fill all required fields")),
+        SnackBar(content: Text("Please fill all required fields")),
       );
       return;
     }
 
     if (pickedImages.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Please take at least one picture of the package")),
-      );
-      return;
-    }
-
-    if (widget.deliveryPosition == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Delivery location coordinates are required")),
+        SnackBar(
+          content: Text("Please take at least one picture of the package"),
+        ),
       );
       return;
     }
@@ -116,179 +134,134 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
     setState(() => isSubmitting = true);
 
     try {
-      // Prepare API request
-      final apiUrl = Uri.parse('$baseUrl/api/bookings/bookings');
-      
-      // Format date and time
-      final formattedDate = DateFormat('yyyy-MM-dd').format(
-        widget.selectedDate ?? DateTime.now()
+      final apiUrl = Uri.parse(
+        'https://trogo-app-backend.onrender.com/api/bookings/bookings',
       );
-      final formattedTime = widget.selectedTime != null 
-          ? widget.selectedTime!.format(context)
-          : DateFormat('hh:mm a').format(DateTime.now());
 
-      // Get vehicle type ID - आधीच्या स्क्रीन वरून येईल
+      final formattedDate = DateFormat(
+        'yyyy-MM-dd',
+      ).format(widget.selectedDate ?? DateTime.now());
+      final formattedTime =
+          widget.selectedTime != null
+              ? '${widget.selectedTime!.hour.toString().padLeft(2, '0')}:${widget.selectedTime!.minute.toString().padLeft(2, '0')}'
+              : DateFormat('HH:mm').format(DateTime.now());
+
       final vehicleTypeId = await _getVehicleTypeId(widget.selectedVehicle);
-
-      // Get auth token
       final authToken = AppPreference().getString(PreferencesKey.authToken);
+
       if (authToken == null || authToken.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Authentication failed. Please login again")),
-        );
-        return;
+        throw Exception("Authentication failed");
       }
 
-      // Create multipart request
-      var request = http.MultipartRequest('POST', apiUrl);
-      
-      // Add headers
+      // Multipart request
+      final request = http.MultipartRequest('POST', apiUrl);
       request.headers['Authorization'] = 'Bearer $authToken';
-      
-      // Add fields - तुमच्या curl command प्रमाणे
-      request.fields['bookingType'] = 'goods';
-      request.fields['vehicleTypeId'] = vehicleTypeId;
-      request.fields['scheduleDate'] = formattedDate;
-      request.fields['scheduleTime'] = formattedTime;
-      request.fields['paymentBy'] = payer;
-      request.fields['paymentType'] = paymentType;
-      request.fields['drop[address]'] = widget.deliveryLocation;
-      
-      // Add coordinates - REQUIRED by API
-      if (widget.deliveryPosition != null) {
-        request.fields['drop[coordinates][0]'] = widget.deliveryPosition!.longitude.toString();
-        request.fields['drop[coordinates][1]'] = widget.deliveryPosition!.latitude.toString();
-      } else {
-        // Default coordinates if not available
-        request.fields['drop[coordinates][0]'] = '73.7351';
-        request.fields['drop[coordinates][1]'] = '19.9550';
-      }
-      
-      // Add pickup information if available
+
+      // Required fields
+      request.fields.addAll({
+        'bookingType': 'goods',
+        'vehicleTypeId': vehicleTypeId,
+        'scheduleDate': formattedDate,
+        'scheduleTime': formattedTime,
+        'paymentBy': payer,
+        'paymentType': paymentType,
+        'drop[address]': widget.deliveryLocation,
+        'goods[name]': goodsName,
+        'goods[weightKg]': _convertToKg(goodsWeight, weightUnit).toString(),
+        'receiver[name]': receiverName,
+        'receiver[phone]': receiverPhone,
+        'estimatedFare': _estimatedFare.toStringAsFixed(2),
+      });
+
+      // Drop coordinates
+      final dropLng = widget.deliveryPosition?.longitude ?? 0.0;
+      final dropLat = widget.deliveryPosition?.latitude ?? 0.0;
+      request.fields['drop[coordinates][0]'] = dropLng.toString();
+      request.fields['drop[coordinates][1]'] = dropLat.toString();
+
+      // Pickup coordinates
       if (widget.pickupPosition != null) {
         request.fields['pickup[address]'] = widget.pickupLocation;
-        request.fields['pickup[coordinates][0]'] = widget.pickupPosition!.longitude.toString();
-        request.fields['pickup[coordinates][1]'] = widget.pickupPosition!.latitude.toString();
+        request.fields['pickup[coordinates][0]'] =
+            widget.pickupPosition!.longitude.toString();
+        request.fields['pickup[coordinates][1]'] =
+            widget.pickupPosition!.latitude.toString();
       }
-      
-      request.fields['goods[name]'] = goodsName;
-      request.fields['goods[weightKg]'] = _convertToKg(goodsWeight, weightUnit).toString();
-      request.fields['receiver[name]'] = receiverName;
-      request.fields['receiver[phone]'] = receiverPhone;
 
-      // Add multiple images - तुमच्या curl command प्रमाणे multiple images
+      // Images
       for (int i = 0; i < pickedImages.length; i++) {
-        final image = pickedImages[i];
         request.files.add(
           await http.MultipartFile.fromPath(
-            'packageImage', // तुमच्या API ला हेच field name लागेल
-            image.path,
+            'packageImage',
+            pickedImages[i].path,
             filename: 'package_${DateTime.now().millisecondsSinceEpoch}_$i.jpg',
           ),
         );
       }
 
-      // Debug print
-      print("📤 API URL: $apiUrl");
-      print("📤 Vehicle Type ID: $vehicleTypeId");
-      print("📤 Images count: ${pickedImages.length}");
-
-      // Send request with timeout
       final response = await request.send().timeout(Duration(seconds: 60));
-      final responseData = await response.stream.bytesToString();
-      
-      print("📥 Response Status: ${response.statusCode}");
-      print("📥 Response Body: $responseData");
+      final responseBody = await response.stream.bytesToString();
 
       if (response.statusCode == 200 || response.statusCode == 201) {
-        final jsonResponse = jsonDecode(responseData);
-        
-        if (jsonResponse['success'] == true || 
-            jsonResponse['status'] == 'success' ||
-            jsonResponse['bookingId'] != null) {
-          
-          // Navigate to tracking page
-          // Navigator.of(context, rootNavigator: true).pushReplacement(
-          //   MaterialPageRoute(
-          //     builder: (_) => CourierTrackingPage(
-          //       bookingId: jsonResponse['data']?['_id'] ?? 
-          //                  jsonResponse['bookingId'] ?? 
-          //                  jsonResponse['id'] ?? 
-          //                  'booking_${DateTime.now().millisecondsSinceEpoch}',
-          //       pickupLocation: widget.pickupLocation,
-          //       deliveryLocation: widget.deliveryLocation,
-          //     ),
-          //   ),
-          // );
-          
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text("Booking created successfully!"),
-              backgroundColor: Colors.green,
-              duration: Duration(seconds: 3),
-            ),
-          );
+        final jsonResponse = jsonDecode(responseBody);
+
+        if (jsonResponse['booking'] != null) {
+          final bookingId = jsonResponse['booking']['_id'];
+          final bookingData = jsonResponse['booking'];
+
+          _showSuccess("Booking created successfully!");
+
+          // Navigate back with booking data
+          if (widget.onBookingCreated != null) {
+            widget.onBookingCreated!(bookingId, bookingData);
+          }
+
+          // Delay navigation to show success message
+          Future.delayed(Duration(seconds: 1), () {
+            Navigator.pushAndRemoveUntil(
+              context,
+              MaterialPageRoute(
+                builder:
+                    (_) => GoodsTrackingPage(
+                      bookingId: bookingId,
+                      bookingData: bookingData,
+                    ),
+              ),
+              (route) => false,
+            );
+          });
         } else {
-          throw Exception(jsonResponse['message'] ?? 'Booking failed');
+          throw Exception("Booking failed - no booking data received");
         }
       } else {
-        final errorData = jsonDecode(responseData);
-        final errorMessage = errorData['message'] ?? 
-                           errorData['error'] ?? 
-                           'Failed to create booking. Status: ${response.statusCode}';
-        throw Exception(errorMessage);
+        throw Exception("Server error: ${response.statusCode}");
       }
     } on TimeoutException {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text("Request timeout. Please try again."),
-          backgroundColor: Colors.orange,
-        ),
-      );
+      _showError("Request timeout. Please try again.");
     } catch (e) {
-      print("❌ Booking Error: $e");
-      
-      String errorMessage = "Booking failed";
-      if (e.toString().contains("drop address")) {
-        errorMessage = "Please select a valid delivery location";
-      } else if (e.toString().contains("coordinates")) {
-        errorMessage = "Location coordinates are required";
-      } else if (e.toString().contains("vehicleTypeId")) {
-        errorMessage = "Please select a valid vehicle type";
-      }
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(errorMessage),
-          backgroundColor: Colors.red,
-        ),
-      );
+      _showError("Error: $e");
     } finally {
       setState(() => isSubmitting = false);
     }
   }
 
-  /// 🚗 GET VEHICLE TYPE ID - ACTUAL IMPLEMENTATION
   Future<String> _getVehicleTypeId(int selectedIndex) async {
-    // येथे तुमच्या vehicle provider वरून actual IDs घ्या
-    // Example vehicle IDs from your system:
+    // These should come from your API
     final vehicleIds = [
-      "69492240c7935ef1fa6dadf5", // Vehicle 1
-      "69492240c7935ef1fa6dadf6", // Vehicle 2  
-      "69492240c7935ef1fa6dadf7", // Vehicle 3
+      "69492240c7935ef1fa6dadf5", // Mini Truck
+      "69492240c7935ef1fa6dadf6", // Truck
+      "69492240c7935ef1fa6dadf7", // Large Truck
     ];
-    
+
     if (selectedIndex >= 0 && selectedIndex < vehicleIds.length) {
       return vehicleIds[selectedIndex];
     }
-    
-    return "69492240c7935ef1fa6dadf5"; // Default vehicle ID
+    return vehicleIds[0];
   }
 
-  /// ⚖️ CONVERT TO KG
   double _convertToKg(String weight, String unit) {
     final weightValue = double.tryParse(weight) ?? 0;
-    
+
     switch (unit) {
       case "KG":
         return weightValue;
@@ -297,17 +270,36 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
       case "QUINTLE":
         return weightValue * 100;
       case "NOS":
-        return weightValue * 1.0; // Adjust as per your business logic
+        return weightValue;
       default:
         return weightValue;
     }
   }
 
-  /// 🗑️ REMOVE IMAGE
   void _removeImage(int index) {
     setState(() {
       pickedImages.removeAt(index);
     });
+  }
+
+  void _showSuccess(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), backgroundColor: Colors.green),
+    );
+  }
+
+  void _showError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), backgroundColor: Colors.red),
+    );
+  }
+
+  String _getVehicleName(int index) {
+    final vehicles = ["Mini Truck", "Truck", "Large Truck"];
+    if (index >= 0 && index < vehicles.length) {
+      return vehicles[index];
+    }
+    return "Vehicle ${index + 1}";
   }
 
   @override
@@ -334,153 +326,85 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
         child: Form(
           key: _formKey,
           child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+            padding: EdgeInsets.all(16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                /// LOCATION SUMMARY
+                // Location Summary
                 _buildLocationSummary(),
+                SizedBox(height: 20),
 
-                const SizedBox(height: 20),
-
-                /// GOODS NAME
+                // Goods Name
                 Text(
                   "Goods Name *",
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.grey.shade800,
-                  ),
+                  style: TextStyle(fontWeight: FontWeight.w600),
                 ),
-                const SizedBox(height: 6),
+                SizedBox(height: 8),
                 TextFormField(
-                  initialValue: goodsName,
                   decoration: InputDecoration(
-                    hintText: "e.g., Boxes, Electronics, Furniture",
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(10),
-                      borderSide: BorderSide(color: Colors.grey.shade300),
-                    ),
-                    filled: true,
-                    fillColor: Colors.grey.shade50,
-                    contentPadding: EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 14,
-                    ),
-                    suffixIcon: goodsName.isNotEmpty
-                        ? IconButton(
-                            icon: Icon(Icons.clear, size: 20),
-                            onPressed: () => setState(() => goodsName = ""),
-                          )
-                        : null,
+                    hintText: "e.g., Electronics, Furniture, Boxes",
+                    border: OutlineInputBorder(),
                   ),
                   onChanged: (value) => setState(() => goodsName = value),
-                  validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return 'Please enter goods name';
-                    }
-                    if (value.length < 2) {
-                      return 'Please enter a valid name';
-                    }
-                    return null;
-                  },
+                  validator:
+                      (value) => value?.isEmpty == true ? "Required" : null,
                 ),
+                SizedBox(height: 16),
 
-                const SizedBox(height: 14),
-
-                /// WEIGHT INPUT
+                // Weight
                 Row(
                   children: [
                     Expanded(
-                      flex: 3,
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
                             "Weight *",
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.grey.shade800,
-                            ),
+                            style: TextStyle(fontWeight: FontWeight.w600),
                           ),
-                          const SizedBox(height: 6),
+                          SizedBox(height: 8),
                           TextFormField(
-                            initialValue: goodsWeight,
-                            keyboardType: TextInputType.numberWithOptions(decimal: true),
+                            keyboardType: TextInputType.number,
                             decoration: InputDecoration(
-                              hintText: "e.g., 5",
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(10),
-                                borderSide: BorderSide(color: Colors.grey.shade300),
-                              ),
-                              filled: true,
-                              fillColor: Colors.grey.shade50,
-                              contentPadding: EdgeInsets.symmetric(
-                                horizontal: 16,
-                                vertical: 14,
-                              ),
-                              suffixText: weightUnit,
+                              hintText: "Enter weight",
+                              border: OutlineInputBorder(),
                             ),
-                            onChanged: (value) => setState(() => goodsWeight = value),
-                            validator: (value) {
-                              if (value == null || value.isEmpty) {
-                                return 'Please enter weight';
-                              }
-                              final weight = double.tryParse(value);
-                              if (weight == null) {
-                                return 'Please enter a valid number';
-                              }
-                              if (weight <= 0) {
-                                return 'Weight must be greater than 0';
-                              }
-                              if (weight > 5000) { // Maximum weight limit
-                                return 'Weight is too large';
-                              }
-                              return null;
+                            onChanged: (value) {
+                              setState(() => goodsWeight = value);
+                              _calculateFare();
                             },
+                            validator:
+                                (value) =>
+                                    value?.isEmpty == true ? "Required" : null,
                           ),
                         ],
                       ),
                     ),
-                    const SizedBox(width: 12),
+                    SizedBox(width: 16),
                     Expanded(
-                      flex: 2,
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
                             "Unit",
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.grey.shade800,
-                            ),
+                            style: TextStyle(fontWeight: FontWeight.w600),
                           ),
-                          const SizedBox(height: 6),
-                          Container(
-                            height: 52,
-                            padding: EdgeInsets.symmetric(horizontal: 12),
-                            decoration: BoxDecoration(
-                              color: Colors.grey.shade50,
-                              borderRadius: BorderRadius.circular(10),
-                              border: Border.all(color: Colors.grey.shade300),
-                            ),
-                            child: DropdownButtonHideUnderline(
-                              child: DropdownButton<String>(
-                                value: weightUnit,
-                                isExpanded: true,
-                                icon: Icon(Icons.arrow_drop_down, color: Colors.grey.shade600),
-                                items: weightUnits.map((unit) {
+                          SizedBox(height: 8),
+                          DropdownButtonFormField<String>(
+                            value: weightUnit,
+                            items:
+                                weightUnits.map((unit) {
                                   return DropdownMenuItem(
                                     value: unit,
                                     child: Text(unit),
                                   );
                                 }).toList(),
-                                onChanged: (value) {
-                                  setState(() => weightUnit = value!);
-                                },
-                              ),
+                            onChanged: (value) {
+                              setState(() => weightUnit = value!);
+                              _calculateFare();
+                            },
+                            decoration: InputDecoration(
+                              border: OutlineInputBorder(),
                             ),
                           ),
                         ],
@@ -488,225 +412,112 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
                     ),
                   ],
                 ),
+                SizedBox(height: 16),
 
-                const SizedBox(height: 20),
-
-                /// PAYER SELECTION
+                // Payer Selection
                 Text(
-                  "Select who pays *",
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.grey.shade800,
-                  ),
+                  "Who pays? *",
+                  style: TextStyle(fontWeight: FontWeight.w600),
                 ),
-                const SizedBox(height: 8),
+                SizedBox(height: 8),
                 Row(
                   children: [
                     Expanded(
-                      child: _buildPayerOption(
+                      child: RadioListTile(
+                        title: Text("Recipient"),
                         value: "recipient",
-                        label: "Recipient",
-                        icon: Icons.person_outline,
-                        isSelected: payer == "recipient",
+                        groupValue: payer,
+                        onChanged: (value) => setState(() => payer = value!),
                       ),
                     ),
-                    const SizedBox(width: 12),
                     Expanded(
-                      child: _buildPayerOption(
+                      child: RadioListTile(
+                        title: Text("Sender (Me)"),
                         value: "sender",
-                        label: "Me (Sender)",
-                        icon: Icons.person,
-                        isSelected: payer == "sender",
+                        groupValue: payer,
+                        onChanged: (value) => setState(() => payer = value!),
                       ),
                     ),
                   ],
                 ),
+                SizedBox(height: 16),
 
-                const SizedBox(height: 14),
-
-                /// PAYMENT TYPE
+                // Payment Type
                 Text(
                   "Payment Type *",
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.grey.shade800,
-                  ),
+                  style: TextStyle(fontWeight: FontWeight.w600),
                 ),
-                const SizedBox(height: 6),
-                Container(
-                  height: 52,
-                  padding: EdgeInsets.symmetric(horizontal: 14),
-                  decoration: BoxDecoration(
-                    color: Colors.grey.shade50,
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: Colors.grey.shade300),
-                  ),
-                  child: DropdownButtonHideUnderline(
-                    child: DropdownButton<String>(
-                      value: paymentType,
-                      isExpanded: true,
-                      icon: Icon(Icons.arrow_drop_down, color: Colors.grey.shade600),
-                      items: const [
-                        DropdownMenuItem(value: "cash", child: Text("Cash")),
-                        DropdownMenuItem(value: "online", child: Text("Online")),
-                        DropdownMenuItem(value: "card", child: Text("Card")),
-                      ],
-                      onChanged: (value) {
-                        setState(() => paymentType = value!);
-                      },
-                    ),
-                  ),
+                SizedBox(height: 8),
+                DropdownButtonFormField<String>(
+                  value: paymentType,
+                  items: [
+                    DropdownMenuItem(value: "cash", child: Text("Cash")),
+                    DropdownMenuItem(value: "online", child: Text("Online")),
+                    DropdownMenuItem(value: "card", child: Text("Card")),
+                  ],
+                  onChanged: (value) => setState(() => paymentType = value!),
+                  decoration: InputDecoration(border: OutlineInputBorder()),
                 ),
+                SizedBox(height: 16),
 
-                const SizedBox(height: 20),
-
-                /// RECEIVER DETAILS
+                // Receiver Details
                 Text(
-                  "Recipient Details *",
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.grey.shade800,
-                  ),
+                  "Receiver Details *",
+                  style: TextStyle(fontWeight: FontWeight.w600),
                 ),
-                const SizedBox(height: 6),
+                SizedBox(height: 8),
                 TextFormField(
-                  initialValue: receiverName,
                   decoration: InputDecoration(
-                    hintText: "Full name",
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(10),
-                      borderSide: BorderSide(color: Colors.grey.shade300),
-                    ),
-                    filled: true,
-                    fillColor: Colors.grey.shade50,
-                    contentPadding: EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 14,
-                    ),
-                    prefixIcon: Icon(Icons.person_outline, size: 20),
+                    hintText: "Receiver Name",
+                    border: OutlineInputBorder(),
                   ),
                   onChanged: (value) => setState(() => receiverName = value),
-                  validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return 'Please enter recipient name';
-                    }
-                    if (value.length < 2) {
-                      return 'Please enter a valid name';
-                    }
-                    return null;
-                  },
+                  validator:
+                      (value) => value?.isEmpty == true ? "Required" : null,
                 ),
-
-                const SizedBox(height: 14),
-
+                SizedBox(height: 8),
                 TextFormField(
-                  initialValue: receiverPhone,
                   keyboardType: TextInputType.phone,
                   decoration: InputDecoration(
-                    hintText: "Phone number",
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(10),
-                      borderSide: BorderSide(color: Colors.grey.shade300),
-                    ),
-                    filled: true,
-                    fillColor: Colors.grey.shade50,
-                    contentPadding: EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 14,
-                    ),
-                    prefixIcon: Icon(Icons.phone, size: 20),
+                    hintText: "Receiver Phone",
+                    border: OutlineInputBorder(),
                   ),
                   onChanged: (value) => setState(() => receiverPhone = value),
-                  validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return 'Please enter phone number';
-                    }
-                    // Simple validation
-                    final phoneRegex = RegExp(r'^[0-9]{10,}$');
-                    final digitsOnly = value.replaceAll(RegExp(r'\D'), '');
-                    if (!phoneRegex.hasMatch(digitsOnly)) {
-                      return 'Please enter a valid 10-digit phone number';
-                    }
-                    return null;
-                  },
+                  validator:
+                      (value) => value?.isEmpty == true ? "Required" : null,
                 ),
+                SizedBox(height: 16),
 
-                const SizedBox(height: 20),
-
-                /// PACKAGE IMAGES (MULTIPLE)
-                Row(
-                  children: [
-                    Text(
-                      "Package Photos *",
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.grey.shade800,
-                      ),
-                    ),
-                    SizedBox(width: 8),
-                    Text(
-                      "(${pickedImages.length}/3)",
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.grey.shade600,
-                      ),
-                    ),
-                  ],
+                // Package Images
+                Text(
+                  "Package Photos * (${pickedImages.length}/3)",
+                  style: TextStyle(fontWeight: FontWeight.w600),
                 ),
-                const SizedBox(height: 6),
-                
+                SizedBox(height: 8),
                 if (pickedImages.isEmpty)
                   GestureDetector(
                     onTap: pickImagesFromCamera,
                     child: Container(
                       height: 150,
-                      width: double.infinity,
                       decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: Colors.blue.shade400,
-                          width: 1.5,
-                        ),
-                        color: Colors.blue.shade50,
+                        border: Border.all(color: Colors.blue),
+                        borderRadius: BorderRadius.circular(10),
                       ),
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          Icon(
-                            Icons.camera_alt,
-                            size: 40,
-                            color: Colors.blue.shade700,
-                          ),
-                          const SizedBox(height: 12),
+                          Icon(Icons.camera_alt, size: 40, color: Colors.blue),
                           Text(
-                            "Take package photos",
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.blue.shade800,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            "Up to 3 photos allowed",
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: Colors.grey.shade600,
-                            ),
+                            "Take Photos",
+                            style: TextStyle(color: Colors.blue),
                           ),
                         ],
                       ),
                     ),
-                  ),
-                
-                if (pickedImages.isNotEmpty)
+                  )
+                else
                   Column(
                     children: [
-                      // Image Grid
                       GridView.builder(
                         shrinkWrap: true,
                         physics: NeverScrollableScrollPhysics(),
@@ -714,45 +525,24 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
                           crossAxisCount: 3,
                           crossAxisSpacing: 8,
                           mainAxisSpacing: 8,
-                          childAspectRatio: 1,
                         ),
-                        itemCount: pickedImages.length + (pickedImages.length < 3 ? 1 : 0),
+                        itemCount:
+                            pickedImages.length +
+                            (pickedImages.length < 3 ? 1 : 0),
                         itemBuilder: (context, index) {
                           if (index < pickedImages.length) {
                             return Stack(
                               children: [
-                                Container(
-                                  decoration: BoxDecoration(
-                                    borderRadius: BorderRadius.circular(8),
-                                    border: Border.all(color: Colors.grey.shade300),
-                                  ),
-                                  child: ClipRRect(
-                                    borderRadius: BorderRadius.circular(8),
-                                    child: Image.file(
-                                      pickedImages[index],
-                                      fit: BoxFit.cover,
-                                      width: double.infinity,
-                                      height: double.infinity,
-                                    ),
-                                  ),
+                                Image.file(
+                                  pickedImages[index],
+                                  fit: BoxFit.cover,
                                 ),
                                 Positioned(
-                                  top: 4,
-                                  right: 4,
-                                  child: GestureDetector(
-                                    onTap: () => _removeImage(index),
-                                    child: Container(
-                                      padding: EdgeInsets.all(2),
-                                      decoration: BoxDecoration(
-                                        color: Colors.red,
-                                        shape: BoxShape.circle,
-                                      ),
-                                      child: Icon(
-                                        Icons.close,
-                                        size: 14,
-                                        color: Colors.white,
-                                      ),
-                                    ),
+                                  top: 0,
+                                  right: 0,
+                                  child: IconButton(
+                                    icon: Icon(Icons.close, size: 20),
+                                    onPressed: () => _removeImage(index),
                                   ),
                                 ),
                               ],
@@ -762,118 +552,50 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
                               onTap: pickImagesFromCamera,
                               child: Container(
                                 decoration: BoxDecoration(
+                                  border: Border.all(color: Colors.blue),
                                   borderRadius: BorderRadius.circular(8),
-                                  border: Border.all(
-                                    color: Colors.blue.shade300,
-                                    width: 2,
-                                  ),
-                                  color: Colors.blue.shade50,
                                 ),
-                                child: Center(
-                                  child: Column(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      Icon(
-                                        Icons.add,
-                                        size: 24,
-                                        color: Colors.blue.shade700,
-                                      ),
-                                      SizedBox(height: 4),
-                                      Text(
-                                        "Add More",
-                                        style: TextStyle(
-                                          fontSize: 10,
-                                          color: Colors.blue.shade700,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
+                                child: Icon(Icons.add, color: Colors.blue),
                               ),
                             );
                           }
                         },
                       ),
-                      
                       SizedBox(height: 8),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.info_outline, size: 14, color: Colors.grey.shade600),
-                          SizedBox(width: 4),
-                          Text(
-                            "Minimum 1, Maximum 3 photos",
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: Colors.grey.shade600,
-                            ),
-                          ),
-                        ],
+                      Text(
+                        "Minimum 1, Maximum 3 photos",
+                        style: TextStyle(fontSize: 12, color: Colors.grey),
                       ),
                     ],
                   ),
+                SizedBox(height: 20),
 
-                const SizedBox(height: 30),
-
-                /// BOOKING SUMMARY
+                // Booking Summary
                 _buildBookingSummary(),
+                SizedBox(height: 20),
 
-                const SizedBox(height: 20),
-
-                /// SUBMIT BUTTON
+                // Submit Button
                 SizedBox(
                   width: double.infinity,
-                  height: 55,
                   child: ElevatedButton(
                     onPressed: isSubmitting ? null : _submitBooking,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.black,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      elevation: 2,
-                      padding: EdgeInsets.zero,
+                      padding: EdgeInsets.symmetric(vertical: 16),
                     ),
-                    child: isSubmitting
-                        ? Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Colors.white,
-                                ),
+                    child:
+                        isSubmitting
+                            ? CircularProgressIndicator(color: Colors.white)
+                            : Text(
+                              "Confirm Booking - ₹${_estimatedFare.toStringAsFixed(0)}",
+                              style: TextStyle(
+                                fontSize: 16,
+                                color: Colors.white,
                               ),
-                              SizedBox(width: 12),
-                              Text(
-                                "Creating Booking...",
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ],
-                          )
-                        : Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Text(
-                                "Confirm Booking",
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                              SizedBox(width: 8),
-                              Icon(Icons.arrow_forward, size: 20),
-                            ],
-                          ),
+                            ),
                   ),
                 ),
-
-                SizedBox(height: MediaQuery.of(context).padding.bottom + 20),
+                SizedBox(height: 20),
               ],
             ),
           ),
@@ -887,22 +609,41 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
       padding: EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: Colors.blue.shade50,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.blue.shade100, width: 1),
+        borderRadius: BorderRadius.circular(10),
       ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Container(
-                width: 36,
-                height: 36,
-                decoration: BoxDecoration(
-                  color: Colors.blue.shade100,
-                  shape: BoxShape.circle,
+              Icon(Icons.schedule, color: Colors.blue),
+              SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      "Delivery Schedule",
+                      style: TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    Text(
+                      "${DateFormat('dd MMM yyyy').format(widget.selectedDate ?? DateTime.now())} • "
+                      "${widget.selectedTime?.format(context) ?? 'Now'}",
+                    ),
+                  ],
                 ),
-                child: Icon(Icons.schedule, size: 18, color: Colors.blue.shade700),
+              ),
+            ],
+          ),
+          Divider(height: 20),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Column(
+                children: [
+                  Icon(Icons.circle, color: Colors.red, size: 16),
+                  Container(width: 2, height: 40, color: Colors.grey),
+                  Icon(Icons.flag, color: Colors.green, size: 16),
+                ],
               ),
               SizedBox(width: 12),
               Expanded(
@@ -910,140 +651,22 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      "Delivery Schedule",
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.blue.shade800,
-                      ),
+                      "Pickup",
+                      style: TextStyle(fontSize: 12, color: Colors.grey),
                     ),
-                    SizedBox(height: 2),
+                    Text(widget.pickupLocation, maxLines: 2),
+                    SizedBox(height: 16),
                     Text(
-                      "${DateFormat('dd MMM yyyy').format(widget.selectedDate ?? DateTime.now())} • "
-                      "${widget.selectedTime?.format(context) ?? DateFormat('hh:mm a').format(DateTime.now())}",
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: Colors.grey.shade700,
-                      ),
+                      "Delivery",
+                      style: TextStyle(fontSize: 12, color: Colors.grey),
                     ),
+                    Text(widget.deliveryLocation, maxLines: 2),
                   ],
                 ),
               ),
             ],
           ),
-          SizedBox(height: 12),
-          Divider(height: 1, color: Colors.blue.shade200),
-          SizedBox(height: 12),
-          _buildLocationRow(
-            icon: Icons.location_on,
-            color: Colors.red,
-            text: widget.pickupLocation,
-            label: "Pickup",
-          ),
-          SizedBox(height: 12),
-          Container(
-            height: 16,
-            width: 1,
-            color: Colors.grey.shade300,
-            margin: EdgeInsets.only(left: 12),
-          ),
-          SizedBox(height: 12),
-          _buildLocationRow(
-            icon: Icons.flag,
-            color: Colors.green,
-            text: widget.deliveryLocation,
-            label: "Delivery",
-          ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildLocationRow({
-    required IconData icon,
-    required Color color,
-    required String text,
-    required String label,
-  }) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          width: 24,
-          height: 24,
-          decoration: BoxDecoration(
-            color: color.withOpacity(0.1),
-            shape: BoxShape.circle,
-          ),
-          child: Icon(icon, size: 14, color: color),
-        ),
-        SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Colors.grey.shade600,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-              SizedBox(height: 2),
-              Text(
-                text,
-                style: TextStyle(
-                  fontSize: 13,
-                  color: Colors.black87,
-                ),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildPayerOption({
-    required String value,
-    required String label,
-    required IconData icon,
-    required bool isSelected,
-  }) {
-    return GestureDetector(
-      onTap: () => setState(() => payer = value),
-      child: Container(
-        padding: EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: isSelected ? Colors.blue.shade50 : Colors.grey.shade50,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: isSelected ? Colors.blue.shade300 : Colors.grey.shade300,
-            width: isSelected ? 2 : 1,
-          ),
-        ),
-        child: Column(
-          children: [
-            Icon(
-              icon,
-              color: isSelected ? Colors.blue.shade700 : Colors.grey.shade700,
-              size: 28,
-            ),
-            SizedBox(height: 8),
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
-                color: isSelected ? Colors.blue.shade800 : Colors.black87,
-              ),
-              textAlign: TextAlign.center,
-            ),
-          ],
-        ),
       ),
     );
   }
@@ -1052,103 +675,68 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
     return Container(
       padding: EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.grey.shade50,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.shade300, width: 1),
+        border: Border.all(color: Colors.grey),
+        borderRadius: BorderRadius.circular(10),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Icon(Icons.receipt_long, size: 18, color: Colors.grey.shade700),
-              SizedBox(width: 8),
-              Text(
-                "Booking Summary",
-                style: TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.black87,
-                ),
-              ),
-            ],
+          Text(
+            "Booking Summary",
+            style: TextStyle(fontWeight: FontWeight.bold),
           ),
           SizedBox(height: 12),
           _buildSummaryRow("Service", "Goods Delivery"),
           _buildSummaryRow("Vehicle", _getVehicleName(widget.selectedVehicle)),
-          _buildSummaryRow("Pickup", widget.pickupLocation, maxLines: 1),
-          _buildSummaryRow("Delivery", widget.deliveryLocation, maxLines: 1),
+          _buildSummaryRow("Pickup", widget.pickupLocation),
+          _buildSummaryRow("Delivery", widget.deliveryLocation),
           _buildSummaryRow("Goods", goodsName.isNotEmpty ? goodsName : "-"),
-          _buildSummaryRow("Weight", goodsWeight.isNotEmpty ? "$goodsWeight $weightUnit" : "-"),
-          _buildSummaryRow("Payment by", payer == "recipient" ? "Recipient" : "Sender"),
+          _buildSummaryRow(
+            "Weight",
+            goodsWeight.isNotEmpty ? "$goodsWeight $weightUnit" : "-",
+          ),
+          _buildSummaryRow(
+            "Receiver",
+            receiverName.isNotEmpty ? receiverName : "-",
+          ),
+          _buildSummaryRow(
+            "Payment by",
+            payer == "recipient" ? "Recipient" : "Sender",
+          ),
           _buildSummaryRow("Payment type", paymentType.toUpperCase()),
-          _buildSummaryRow("Photos", "${pickedImages.length} image(s)"),
-          Divider(height: 20, color: Colors.grey.shade300),
+          Divider(),
           _buildSummaryRow(
             "Estimated Fare",
-            "₹${_calculateFare()}",
+            "₹${_estimatedFare.toStringAsFixed(0)}",
             isBold: true,
-            color: Colors.green.shade700,
+            color: Colors.green,
           ),
         ],
       ),
     );
   }
 
-  Widget _buildSummaryRow(String label, String value, {
+  Widget _buildSummaryRow(
+    String label,
+    String value, {
     bool isBold = false,
     Color? color,
-    int maxLines = 2,
   }) {
     return Padding(
-      padding: EdgeInsets.only(bottom: 10),
+      padding: EdgeInsets.symmetric(vertical: 4),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Expanded(
-            child: Text(
-              label,
-              style: TextStyle(
-                fontSize: 13,
-                color: Colors.grey.shade700,
-              ),
-            ),
-          ),
-          SizedBox(width: 12),
-          Expanded(
-            flex: 2,
-            child: Text(
-              value,
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: isBold ? FontWeight.w600 : FontWeight.w500,
-                color: color ?? Colors.black87,
-              ),
-              maxLines: maxLines,
-              overflow: TextOverflow.ellipsis,
-              textAlign: TextAlign.right,
+          Text(label, style: TextStyle(color: Colors.grey)),
+          Text(
+            value,
+            style: TextStyle(
+              fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
+              color: color ?? Colors.black,
             ),
           ),
         ],
       ),
     );
-  }
-
-  String _getVehicleName(int index) {
-    final vehicles = ["Mini Truck", "Truck", "Large Truck"];
-    if (index >= 0 && index < vehicles.length) {
-      return vehicles[index];
-    }
-    return "Vehicle ${index + 1}";
-  }
-
-  String _calculateFare() {
-    // Implement your actual fare calculation logic
-    double baseFare = 100.0;
-    double weightMultiplier = double.tryParse(goodsWeight) ?? 0;
-    double vehicleMultiplier = (widget.selectedVehicle + 1) * 50.0;
-    
-    double totalFare = baseFare + (weightMultiplier * 5) + vehicleMultiplier;
-    return totalFare.toStringAsFixed(0);
   }
 }

@@ -9,11 +9,116 @@ import 'dart:convert';
 import 'dart:async';
 
 import 'package:trogo_app/auth/login_notifier.dart';
-import 'package:trogo_app/goods_details_page.dart' show GoodsDetailsPage;
+import 'package:trogo_app/goods_details_page.dart';
+import 'package:trogo_app/transportergoods/tracking_screen.dart';
+// import 'package:trogo_app/goods_details_page.dart' show GoodsDetailsPage;
 import 'package:trogo_app/wigets/search_location_screen.dart';
 
+import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
+
+
+// goods_flow_manager.dart
+import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
+
+
+class GoodsFlowManager extends StatefulWidget {
+  const GoodsFlowManager({super.key});
+
+  @override
+  State<GoodsFlowManager> createState() => _GoodsFlowManagerState();
+}
+
+class _GoodsFlowManagerState extends State<GoodsFlowManager> {
+  String? _bookingId;
+  Map<String, dynamic>? _driverInfo;
+  bool _isRideCompleted = false;
+  Map<String, dynamic>? _bookingData;
+
+  void _handleBookingCreated(String bookingId, Map<String, dynamic> bookingData) {
+    setState(() {
+      _bookingId = bookingId;
+      _bookingData = bookingData;
+    });
+  }
+
+  void _handleRideCompleted() {
+    setState(() {
+      _isRideCompleted = true;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: _isRideCompleted
+          ? _buildCompletionScreen()
+          : _bookingId == null
+              ? ScheduleDeliveryPage(
+                  onBookingCreated: _handleBookingCreated,
+                )
+              : GoodsTrackingPage(
+                  bookingId: _bookingId!,
+                  bookingData: _bookingData!,
+                  onRideCompleted: _handleRideCompleted,
+                ),
+    );
+  }
+
+  Widget _buildCompletionScreen() {
+    return Container(
+      color: Colors.white,
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.check_circle, size: 100, color: Colors.green),
+          SizedBox(height: 20),
+          Text(
+            "Delivery Completed!",
+            style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+          ),
+          SizedBox(height: 10),
+          Text(
+            "Thank you for choosing our service",
+            style: TextStyle(fontSize: 16, color: Colors.grey),
+          ),
+          SizedBox(height: 20),
+          Text(
+            "Payment completed successfully",
+            style: TextStyle(fontSize: 14, color: Colors.green),
+          ),
+          SizedBox(height: 40),
+          ElevatedButton(
+            onPressed: () {
+              setState(() {
+                _bookingId = null;
+                _isRideCompleted = false;
+                _bookingData = null;
+              });
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.black,
+              padding: EdgeInsets.symmetric(horizontal: 40, vertical: 16),
+            ),
+            child: Text("Book Another Delivery"),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+
+
+// 1. First, update the ScheduleDeliveryPage to accept the callback
 class ScheduleDeliveryPage extends ConsumerStatefulWidget {
-  const ScheduleDeliveryPage({super.key});
+  final Function(String, Map<String, dynamic>)? onBookingCreated;
+
+  const ScheduleDeliveryPage({
+    super.key,
+    this.onBookingCreated,
+  });
 
   @override
   ConsumerState<ScheduleDeliveryPage> createState() =>
@@ -37,11 +142,11 @@ class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
   @override
   void initState() {
     super.initState();
+
     _setCurrentPickupLocation();
-    transportVehicletypesApi(ref);
+    vehicletypesApi(ref, "goods");
   }
 
-  // ✅ GEOCODING HELPER FUNCTION ADD करा
   Future<void> _geocodeAddress(String address) async {
     try {
       List<Location> locations = await locationFromAddress(address);
@@ -202,7 +307,7 @@ class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
 
   @override
   Widget build(BuildContext context) {
-    final transport = ref.watch(transdportVihicletypeProvider);
+    final transport = ref.watch(vihicletypeProvider);
 
     return Scaffold(
       backgroundColor: Colors.white,
@@ -465,19 +570,23 @@ class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
                                   final result = await Navigator.push(
                                     context,
                                     MaterialPageRoute(
-                                      builder: (_) => LocationSearchPage(
-                                        initialQuery: pickupLocation.contains(
-                                                  "Getting",
-                                                )
-                                            ? ""
-                                            : pickupLocation,
-                                        title: "Set Pickup Location",
-                                        currentPosition: currentPosition,
-                                      ),
+                                      builder:
+                                          (_) => LocationSearchPage(
+                                            initialQuery:
+                                                pickupLocation.contains(
+                                                      "Getting",
+                                                    )
+                                                    ? ""
+                                                    : pickupLocation,
+                                            title: "Set Pickup Location",
+                                            currentPosition: currentPosition,
+                                          ),
                                     ),
                                   );
 
-                                  print("📍 Pickup result type: ${result.runtimeType}");
+                                  print(
+                                    "📍 Pickup result type: ${result.runtimeType}",
+                                  );
                                   print("📍 Pickup result value: $result");
 
                                   if (result != null) {
@@ -497,19 +606,24 @@ class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
                                 location: deliveryLocation,
                                 isLoading: false,
                                 onTap: () async {
-                                  print("📍 Opening delivery location search...");
+                                  print(
+                                    "📍 Opening delivery location search...",
+                                  );
                                   final result = await Navigator.push(
                                     context,
                                     MaterialPageRoute(
-                                      builder: (_) => LocationSearchPage(
-                                        initialQuery: deliveryLocation,
-                                        title: "Set Delivery Location",
-                                        currentPosition: currentPosition,
-                                      ),
+                                      builder:
+                                          (_) => LocationSearchPage(
+                                            initialQuery: deliveryLocation,
+                                            title: "Set Delivery Location",
+                                            currentPosition: currentPosition,
+                                          ),
                                     ),
                                   );
 
-                                  print("📍 Delivery result type: ${result.runtimeType}");
+                                  print(
+                                    "📍 Delivery result type: ${result.runtimeType}",
+                                  );
                                   print("📍 Delivery result value: $result");
 
                                   if (result != null) {
@@ -530,9 +644,12 @@ class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
                                     child: _buildDateTimeButton(
                                       icon: Icons.calendar_today,
                                       title: "Date",
-                                      value: selectedDate != null
-                                          ? DateFormat('dd/MM/yyyy').format(selectedDate!)
-                                          : "Today",
+                                      value:
+                                          selectedDate != null
+                                              ? DateFormat(
+                                                'dd/MM/yyyy',
+                                              ).format(selectedDate!)
+                                              : "Today",
                                       onTap: _pickDate,
                                     ),
                                   ),
@@ -541,9 +658,10 @@ class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
                                     child: _buildDateTimeButton(
                                       icon: Icons.access_time,
                                       title: "Time",
-                                      value: selectedTime != null
-                                          ? selectedTime!.format(context)
-                                          : "Now",
+                                      value:
+                                          selectedTime != null
+                                              ? selectedTime!.format(context)
+                                              : "Now",
                                       onTap: _pickTime,
                                     ),
                                   ),
@@ -581,27 +699,33 @@ class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
                                         width: 120,
                                         margin: EdgeInsets.only(right: 12),
                                         decoration: BoxDecoration(
-                                          color: isSelected
-                                              ? Colors.blue.shade50
-                                              : Colors.grey.shade50,
-                                          borderRadius: BorderRadius.circular(16),
+                                          color:
+                                              isSelected
+                                                  ? Colors.blue.shade50
+                                                  : Colors.grey.shade50,
+                                          borderRadius: BorderRadius.circular(
+                                            16,
+                                          ),
                                           border: Border.all(
-                                            color: isSelected
-                                                ? Colors.blue.shade700
-                                                : Colors.grey.shade300,
+                                            color:
+                                                isSelected
+                                                    ? Colors.blue.shade700
+                                                    : Colors.grey.shade300,
                                             width: isSelected ? 2 : 1,
                                           ),
                                         ),
                                         child: Column(
-                                          mainAxisAlignment: MainAxisAlignment.center,
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.center,
                                           children: [
                                             Container(
                                               width: 50,
                                               height: 50,
                                               decoration: BoxDecoration(
-                                                color: isSelected
-                                                    ? Colors.blue.shade100
-                                                    : Colors.grey.shade200,
+                                                color:
+                                                    isSelected
+                                                        ? Colors.blue.shade100
+                                                        : Colors.grey.shade200,
                                                 shape: BoxShape.circle,
                                               ),
                                               child: Center(
@@ -618,9 +742,10 @@ class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
                                               style: TextStyle(
                                                 fontSize: 13,
                                                 fontWeight: FontWeight.w600,
-                                                color: isSelected
-                                                    ? Colors.blue.shade700
-                                                    : Colors.black87,
+                                                color:
+                                                    isSelected
+                                                        ? Colors.blue.shade700
+                                                        : Colors.black87,
                                               ),
                                             ),
                                             SizedBox(height: 4),
@@ -641,11 +766,12 @@ class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
 
                               SizedBox(height: 30),
 
-                              /// NEXT BUTTON
+                              /// NEXT BUTTON - Updated to pass callback
                               _buildNextButton(context),
 
                               SizedBox(
-                                height: MediaQuery.of(context).padding.bottom + 16,
+                                height:
+                                    MediaQuery.of(context).padding.bottom + 16,
                               ),
                             ],
                           ),
@@ -821,9 +947,10 @@ class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
                       location.isNotEmpty ? location : "Select location",
                       style: TextStyle(
                         fontSize: 15,
-                        color: location.isNotEmpty
-                            ? Colors.black
-                            : Colors.grey.shade500,
+                        color:
+                            location.isNotEmpty
+                                ? Colors.black
+                                : Colors.grey.shade500,
                         fontWeight: FontWeight.w600,
                       ),
                       maxLines: 2,
@@ -886,8 +1013,10 @@ class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
     );
   }
 
+  // ✅ UPDATED NEXT BUTTON WITH CALLBACK PASSING
   Widget _buildNextButton(BuildContext context) {
-    bool isReady = pickupLocation.isNotEmpty &&
+    bool isReady =
+        pickupLocation.isNotEmpty &&
         deliveryLocation.isNotEmpty &&
         !pickupLocation.contains("Getting") &&
         !pickupLocation.contains("Tap to");
@@ -895,19 +1024,23 @@ class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
     return GestureDetector(
       onTap: isReady
           ? () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => GoodsDetailsPage(
-                    pickupLocation: pickupLocation,
-                    deliveryLocation: deliveryLocation,
-                    selectedDate: selectedDate,
-                    selectedTime: selectedTime,
-                    selectedVehicle: selectedVehicle,
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder:
+                        (_) => GoodsDetailsPage(
+                          pickupLocation: pickupLocation,
+                          deliveryLocation: deliveryLocation,
+                          selectedDate: selectedDate,
+                          selectedTime: selectedTime,
+                          selectedVehicle: selectedVehicle,
+                          pickupPosition: currentPosition,
+                          deliveryPosition: deliveryPosition,
+                          onBookingCreated: widget.onBookingCreated, // Pass callback
+                        ),
                   ),
-                ),
-              );
-            }
+                );
+              }
           : null,
       child: AnimatedContainer(
         duration: Duration(milliseconds: 300),
@@ -916,15 +1049,16 @@ class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
         decoration: BoxDecoration(
           color: isReady ? Colors.black : Colors.grey.shade300,
           borderRadius: BorderRadius.circular(16),
-          boxShadow: isReady
-              ? [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.2),
-                    blurRadius: 10,
-                    spreadRadius: 1,
-                  ),
-                ]
-              : [],
+          boxShadow:
+              isReady
+                  ? [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.2),
+                      blurRadius: 10,
+                      spreadRadius: 1,
+                    ),
+                  ]
+                  : [],
         ),
         child: Center(
           child: Text(

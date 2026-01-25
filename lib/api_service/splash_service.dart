@@ -22,7 +22,7 @@ class SplashServices {
       } else {
        Navigator.pushReplacement(
             context,
-            MaterialPageRoute(builder: (context) => PhoneNumberScreen()),
+            MaterialPageRoute(builder: (context) => LocationPermissionScreen()),
           );
           } 
       // Navigator.popAndPushNamed(context, RoutesName.loginscreen);

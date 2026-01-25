@@ -24,17 +24,16 @@ enum RideState {
   editDropoff,
 }
 
-class RideHomePage extends ConsumerStatefulWidget {
+class TransportRideHomePage extends ConsumerStatefulWidget {
   final SelectedLocation? currentLocation;
-  final bool isGoodsTransport;
 
-  const RideHomePage({super.key, this.currentLocation, this.isGoodsTransport = false});
+  const TransportRideHomePage({super.key, this.currentLocation});
 
   @override
-  _RideHomePageState createState() => _RideHomePageState();
+  _TransportRideHomePageState createState() => _TransportRideHomePageState();
 }
 
-class _RideHomePageState extends ConsumerState<RideHomePage> {
+class _TransportRideHomePageState extends ConsumerState<TransportRideHomePage> {
   RideState currentState = RideState.searchDestination;
   String selectedRide = "Normal";
   String selectedId = "";
@@ -93,7 +92,6 @@ class _RideHomePageState extends ConsumerState<RideHomePage> {
       context,
       MaterialPageRoute(builder: (context) => LocationPermissionScreen()),
     );
-
     if (result != null) {
       setState(() {
         destLatitude = result['latitude'];
@@ -110,7 +108,7 @@ class _RideHomePageState extends ConsumerState<RideHomePage> {
   }
 
   Future<void> _setupMapAndRoute() async {
-    print('🗺️ Setting up map and route in RideHomePage...');
+    print('🗺️ Setting up map and route in TransportRideHomePage...');
 
     // Clear old data
     _markers.clear();
@@ -450,7 +448,7 @@ class _RideHomePageState extends ConsumerState<RideHomePage> {
   @override
   void initState() {
     super.initState();
-    print('🚗 RideHomePage initialized');
+    print('🚗 TransportRideHomePage initialized');
 
     // Initialize map
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -654,15 +652,13 @@ class _RideHomePageState extends ConsumerState<RideHomePage> {
                     : null;
 
             return ChooseRideUI(
-              isGoodsTransport: widget.isGoodsTransport,
               onBack: () => goTo(RideState.pickupDrop),
               onSelect: (
                 selectedVehicleName,
                 selectedVehicleId,
                 selectedPrice,
-                
               ) async {
-                print('🚗 Vehicle selected in RideHomePage:');
+                print('🚗 Vehicle selected in TransportRideHomePage:');
                 print('   Name: $selectedVehicleName');
                 print('   ID: $selectedVehicleId');
                 print('   Price: ₹$selectedPrice');
@@ -673,7 +669,7 @@ class _RideHomePageState extends ConsumerState<RideHomePage> {
                   this.price = selectedPrice;
                 });
                 fareEstimateApi(
-                  category: widget.isGoodsTransport ? "goods" : "passenger",
+                  category: "passenger",
                   ref: ref,
                   vehicleTypeId: selectedVehicleId,
                   pickupAddress: pickupLocation?.address ?? "Pickup Location",

@@ -11,7 +11,6 @@ class ChooseRideUI extends ConsumerStatefulWidget {
   final SelectedLocation? pickupLocation;
   final SelectedLocation? destinationLocation;
   final bool isLoading;
-  final bool? isGoodsTransport;
 
 
   const ChooseRideUI({
@@ -21,7 +20,6 @@ class ChooseRideUI extends ConsumerStatefulWidget {
     this.pickupLocation,
     this.destinationLocation,
     this.isLoading = false,
-    this.isGoodsTransport = false,
    
   });
 
@@ -42,7 +40,7 @@ class _ChooseRideUIState extends ConsumerState<ChooseRideUI> {
     _printLocationDetails();
     _startLoadingSimulation();
         fareEstimateApi(
-          category: (widget.isGoodsTransport ?? false) ? "goods" : "passenger",
+          category: "passenger",
                   ref: ref,
                   vehicleTypeId:
                       selectedVehicleId.toString(), 
@@ -558,7 +556,7 @@ class _ChooseRideUIState extends ConsumerState<ChooseRideUI> {
                 });
 
                    fareEstimateApi(
-                    category: (widget.isGoodsTransport ?? false) ? "goods" : "passenger",
+                    category: "passenger",
                   ref: ref,
                   vehicleTypeId:
                       selectedVehicleId.toString(), 

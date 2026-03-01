@@ -4,7 +4,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'PreferencesKey.dart';
 
-
 class AppPreference {
   static final AppPreference _appPreference = AppPreference._internal();
 
@@ -99,7 +98,6 @@ class AppPreference {
   // bool get showIntro => getBool(PreferencesKey.introPage);
   // String get uType => getString(PreferencesKey.uType);
   String get uName => getString(PreferencesKey.userName);
-
 
   // int get isLoginFirstTimeteacher =>
 

@@ -18,10 +18,10 @@ class _PhoneNumberScreenState extends ConsumerState<PhoneNumberScreen> {
   bool _showPassword = false;
   
   TextEditingController usernameController = TextEditingController(
-     text: "passengerdigi@gmail.com",
+    text: "passengerdigi@gmail.com",
   );
   TextEditingController passwordController = TextEditingController(
-    text: "123",
+     text: "123",
   );
 
   @override

@@ -48,13 +48,13 @@ class _ChooseRideUIState extends ConsumerState<ChooseRideUI> {
                       selectedVehicleId.toString(), 
                   pickupAddress:widget.pickupLocation?.address ?? "Pickup Location",
                   pickupCoordinates: [
-                    widget.pickupLocation!.latitude,
                     widget.pickupLocation!.longitude,
+                    widget.pickupLocation!.latitude,
                   ],
                   dropAddress: widget.destinationLocation!.address ?? "Destination",
                   dropCoordinates: [
-                    widget.destinationLocation!.latitude,
                     widget.destinationLocation!.longitude,
+                    widget.destinationLocation!.latitude,
                   ],
                 );
    

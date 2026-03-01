@@ -10,6 +10,7 @@ import 'dart:async';
 
 import 'package:trogo_app/auth/login_notifier.dart';
 import 'package:trogo_app/goods_details_page.dart';
+import 'package:trogo_app/models/vehicle_type_model.dart';
 import 'package:trogo_app/transportergoods/tracking_screen.dart';
 // import 'package:trogo_app/goods_details_page.dart' show GoodsDetailsPage;
 import 'package:trogo_app/wigets/search_location_screen.dart';
@@ -52,19 +53,15 @@ class _GoodsFlowManagerState extends State<GoodsFlowManager> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: _isRideCompleted
-          ? _buildCompletionScreen()
-          : _bookingId == null
-              ? ScheduleDeliveryPage(
+      body:  ScheduleDeliveryPage(
                   onBookingCreated: _handleBookingCreated,
                 )
-              : GoodsTrackingPage(
-                  bookingId: _bookingId!,
-                  bookingData: _bookingData!,
-                  onRideCompleted: _handleRideCompleted,
-                ),
+            
     );
   }
+
+
+
 
   Widget _buildCompletionScreen() {
     return Container(
@@ -146,6 +143,7 @@ class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
     _setCurrentPickupLocation();
     vehicletypesApi(ref, "goods");
   }
+
 
   Future<void> _geocodeAddress(String address) async {
     try {
@@ -243,7 +241,7 @@ class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
       });
     }
   }
-
+ VehicleType? selectedVehicleData;
   void _updateMapMarkers() {
     markers.clear();
 
@@ -682,7 +680,7 @@ class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
                               SizedBox(height: 12),
 
                               SizedBox(
-                                height: 110,
+                                height: 120,
                                 child: ListView.builder(
                                   scrollDirection: Axis.horizontal,
                                   physics: BouncingScrollPhysics(),
@@ -690,10 +688,10 @@ class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
                                   itemBuilder: (context, index) {
                                     final vehicle = transport[index];
                                     bool isSelected = selectedVehicle == index;
-
                                     return GestureDetector(
                                       onTap: () {
                                         setState(() => selectedVehicle = index);
+                                         selectedVehicleData = vehicle;
                                       },
                                       child: Container(
                                         width: 120,
@@ -750,7 +748,7 @@ class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
                                             ),
                                             SizedBox(height: 4),
                                             Text(
-                                              "₹${(index + 1) * 50} approx",
+                                               "₹${vehicle.rate} / ${vehicle.pricingType == "PER_HOUR" ? "Hour" : "KM"}",
                                               style: TextStyle(
                                                 fontSize: 11,
                                                 color: Colors.grey.shade600,
@@ -1033,7 +1031,7 @@ class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
                           deliveryLocation: deliveryLocation,
                           selectedDate: selectedDate,
                           selectedTime: selectedTime,
-                          selectedVehicle: selectedVehicle,
+                          selectedVehicle: selectedVehicleData!,
                           pickupPosition: currentPosition,
                           deliveryPosition: deliveryPosition,
                           onBookingCreated: widget.onBookingCreated, // Pass callback

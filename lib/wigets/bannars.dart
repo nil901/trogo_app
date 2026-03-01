@@ -1,6 +1,6 @@
+// lib/wigets/bannars.dart
 import 'dart:async';
 import 'dart:convert';
-import 'dart:developer';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
@@ -9,552 +9,352 @@ import 'package:trogo_app/api_service/urls.dart';
 import 'package:trogo_app/prefs/PreferencesKey.dart';
 import 'package:trogo_app/prefs/app_preference.dart';
 
-class Banner {
+// Category Model
+class BannerCategory {
+  final String id;
+  final String name;
+  final String createdAt;
+  final String updatedAt;
+  
+  BannerCategory({
+    required this.id,
+    required this.name,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+  
+  factory BannerCategory.fromJson(Map<String, dynamic> json) {
+    return BannerCategory(
+      id: json['_id']?.toString() ?? '',
+      name: json['name']?.toString() ?? '',
+      createdAt: json['createdAt']?.toString() ?? '',
+      updatedAt: json['updatedAt']?.toString() ?? '',
+    );
+  }
+  
+  // Clean name without HTML tags
+  String get cleanName {
+    return _cleanText(name);
+  }
+}
+
+// MyBanner Model
+class MyBanner {
   final String id;
   final String category;
   final String title;
   final String subtitle;
   final String image;
+  final String createdAt;
+  final String updatedAt;
   
-  Banner({
+  MyBanner({
     required this.id,
     required this.category,
     required this.title,
     required this.subtitle,
     required this.image,
+    required this.createdAt,
+    required this.updatedAt,
   });
   
-  factory Banner.fromJson(Map<String, dynamic> json) {
-    return Banner(
+  factory MyBanner.fromJson(Map<String, dynamic> json) {
+    return MyBanner(
       id: json['_id']?.toString() ?? '',
       category: json['category']?.toString() ?? '',
       title: json['title']?.toString() ?? '',
       subtitle: json['subtitle']?.toString() ?? '',
       image: json['image']?.toString() ?? '',
+      createdAt: json['createdAt']?.toString() ?? '',
+      updatedAt: json['updatedAt']?.toString() ?? '',
     );
   }
+  
+  // Clean text without HTML tags
+  String get cleanTitle => _cleanText(title);
+  String get cleanSubtitle => _cleanText(subtitle);
 }
 
-class ApiService {
+// Helper function to clean HTML tags
+String _cleanText(String text) {
+  if (text.isEmpty) return '';
+  String cleaned = text.replaceAll(RegExp(r'<[^>]*>'), '');
+  cleaned = cleaned
+      .replaceAll('&amp;', '&')
+      .replaceAll('&lt;', '<')
+      .replaceAll('&gt;', '>')
+      .replaceAll('&quot;', '"')
+      .replaceAll('&#39;', "'")
+      .replaceAll('&nbsp;', ' ')
+      .replaceAll('&amp;', '&');
+  return cleaned.trim();
+}
 
-  // सभी categories के banners fetch करें
-  Future<List<Banner>> getAllBanners() async {
+// API Service
+class BannerApiService {
+  // Get auth token
+  String? get _authToken {
+    return AppPreference().getString(PreferencesKey.authToken);
+  }
+  
+  // Get headers with authorization
+  Map<String, String> get _headers {
+    return {
+      'Content-Type': 'application/json',
+      if (_authToken != null && _authToken!.isNotEmpty) 
+        'Authorization': 'Bearer $_authToken',
+    };
+  }
+  
+  // 1. सभी categories fetch करें
+  Future<List<BannerCategory>> getAllCategories() async {
     try {
-      print("=== Starting getAllBanners() ===");
-      
-      // 1. सभी categories fetch करें
-      final categoriesResponse = await http.get(
+      print("🔵=== Fetching all categories ===");
+      final response = await http.get(
         Uri.parse('${baseUrl}admin/banners/category/public'),
-        headers: {
-          'Content-Type': 'application/json',
-          // 'Authorization': 'Bearer ${AppPreference().getString(PreferencesKey.authToken).toString()}',
-        },
+        headers: _headers,
       );
       
-      if (categoriesResponse.statusCode != 200) {
-        print("Categories Error: ${categoriesResponse.statusCode}");
-        return [];
-      }
+      print("🔵 Categories Response Status: ${response.statusCode}");
       
-      final categoriesData = json.decode(categoriesResponse.body);
-      final categoriesList = categoriesData['categories'] as List;
-      
-      if (categoriesList.isEmpty) {
-        print("No categories found");
-        return [];
-      }
-      
-      print("Total categories: ${categoriesList.length}");
-      
-      // 2. हर category के banners fetch करें
-      List<Banner> allBanners = [];
-      
-      for (var category in categoriesList) {
-        final categoryId = category['_id'];
-        final categoryName = category['name'];
-        
-        print("\nFetching banners for category: $categoryName (ID: $categoryId)");
-        
-        try {
-          final bannersResponse = await http.get(
-            Uri.parse('${baseUrl}admin/banners/public?categoryId=$categoryId'),
-            headers: {
-              'Content-Type': 'application/json',
-              // 'Authorization': 'Bearer ${AppPreference().getString(PreferencesKey.authToken).toString()}',
-            },
-          );
-          
-          if (bannersResponse.statusCode == 200) {
-            final bannersData = json.decode(bannersResponse.body);
-            final bannersList = bannersData['banners'] as List;
-            
-            print("Found ${bannersList.length} banners in this category");
-            
-            for (var bannerJson in bannersList) {
-              allBanners.add(Banner.fromJson(bannerJson));
-            }
-          } else {
-            print("Failed to fetch banners for category $categoryId: ${bannersResponse.statusCode}");
-          }
-          
-          // थोड़ा delay (optional)
-          await Future.delayed(const Duration(milliseconds: 100));
-          
-        } catch (e) {
-          print("Error fetching banners for category $categoryId: $e");
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> data = json.decode(response.body);
+        if (data['categories'] != null) {
+          final categoriesList = data['categories'] as List;
+          print("🔵 Categories found: ${categoriesList.length}");
+          return categoriesList
+              .map((json) => BannerCategory.fromJson(json))
+              .toList();
         }
       }
-      
-      print("\n=== Total banners fetched: ${allBanners.length} ===");
-      return allBanners;
-      
+      return [];
     } catch (e) {
-      print("Error in getAllBanners: $e");
+      print("🔵 Error fetching categories: $e");
       return [];
     }
   }
   
-  // Type safe version with parallel fetching
-  Future<List<Banner>> getBannersWithContent() async {
+  // 2. Specific category के banners fetch करें
+  Future<List<MyBanner>> getBannersByCategory(String categoryId) async {
     try {
-      // 1. सभी categories fetch करें
-      final categoriesResponse = await http.get(
-        Uri.parse('${baseUrl}admin/banners/category/public'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ${AppPreference().getString(PreferencesKey.authToken).toString()}',
-        },
+      print("🟡=== Fetching banners for category: $categoryId ===");
+      final response = await http.get(
+        Uri.parse('${baseUrl}admin/banners/public?categoryId=$categoryId'),
+        headers: _headers,
       );
       
-      if (categoriesResponse.statusCode != 200) return [];
+      print("🟡 Banners Response Status: ${response.statusCode}");
       
-      final categoriesData = json.decode(categoriesResponse.body);
-      final categoriesList = categoriesData['categories'] as List;
-      
-      if (categoriesList.isEmpty) return [];
-      
-      // 2. Parallel में सभी categories के banners fetch करें
-      List<Future<List<Banner>>> bannerFutures = [];
-      
-      for (var category in categoriesList) {
-        final categoryId = category['_id'];
-        
-        // Type को स्पष्ट रूप से define करें
-        Future<List<Banner>> bannerFuture = http.get(
-          Uri.parse('${baseUrl}admin/banners/public?categoryId=$categoryId'),
-          headers: {
-            'Content-Type': 'application/json',
-            // 'Authorization': 'Bearer ${AppPreference().getString(PreferencesKey.authToken).toString()}',
-          },
-        ).then((http.Response response) {
-          if (response.statusCode == 200) {
-            final bannersData = json.decode(response.body);
-            final bannersList = bannersData['banners'] as List;
-            return bannersList.map<Banner>((json) => Banner.fromJson(json)).toList();
-          }
-          return <Banner>[]; // Empty list with explicit type
-        }).catchError((e) {
-          return <Banner>[]; // Empty list with explicit type
-        });
-        
-        bannerFutures.add(bannerFuture);
-      }
-      
-      // 3. सभी results combine करें
-      final List<List<Banner>> allResults = await Future.wait(bannerFutures);
-      List<Banner> allBanners = [];
-      
-      for (var bannerList in allResults) {
-        allBanners.addAll(bannerList);
-      }
-      
-      return allBanners;
-      
-    } catch (e) {
-      print("Error in getBannersWithContent: $e");
-      return [];
-    }
-  }
-  
-  // Even simpler version
-  Future<List<Banner>> getAllBannersSimple() async {
-    try {
-      // 1. Get categories
-      final categoriesResponse = await http.get(
-        Uri.parse('${baseUrl}admin/banners/category/public'),
-        headers: {
-          'Content-Type': 'application/json',
-          // 'Authorization': 'Bearer ${AppPreference().getString(PreferencesKey.authToken).toString()}',
-        },
-      );
-      print(categoriesResponse.body);
-      if (categoriesResponse.statusCode != 200) return [];
-      
-      final categoriesData = json.decode(categoriesResponse.body);
-      final categoriesList = categoriesData['categories'] as List;
-      
-      // 2. Get banners for each category
-      List<Banner> allBanners = [];
-      
-      for (var category in categoriesList) {
-        final categoryId = category['_id'];
-        
-        final bannersResponse = await http.get(
-          Uri.parse('${baseUrl}admin/banners/public?categoryId=$categoryId'),
-          headers: {
-            'Content-Type': 'application/json',
-            // 'Authorization': 'Bearer ${AppPreference().getString(PreferencesKey.authToken).toString()}',
-          },
-        );
-        print(bannersResponse.statusCode);
-        if (bannersResponse.statusCode == 200) {
-          final bannersData = json.decode(bannersResponse.body);
-          final bannersList = bannersData['banners'] as List;
-          
-          for (var bannerJson in bannersList) {
-            allBanners.add(Banner.fromJson(bannerJson));
-          }
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> data = json.decode(response.body);
+        if (data['banners'] != null) {
+          final bannersList = data['banners'] as List;
+          print("🟡 Banners found: ${bannersList.length}");
+          return bannersList
+              .map((json) => MyBanner.fromJson(json))
+              .toList();
         }
       }
-      
-      return allBanners;
-      
+      return [];
     } catch (e) {
-      print("Error: $e");
+      print("🟡 Error fetching banners: $e");
       return [];
     }
   }
 }
 
-// Provider for all banners
-final allBannersProvider = StateProvider<List<Banner>>((ref) => []);
+// ========== PROVIDERS ==========
 
-// Future provider
-final fetchAllBannersProvider = FutureProvider.autoDispose((ref) async {
-  final apiService = ApiService();
-  final banners = await apiService.getAllBannersSimple();
-  ref.read(allBannersProvider.notifier).state = banners;
+// Categories list provider
+final bannerCategoryProvider = StateProvider<List<BannerCategory>>((ref) => []);
+
+// Selected category ID provider (सोपे - फक्त ID)
+final selectedCategoryIdProvider = StateProvider<String?>((ref) => null);
+
+// Fetch all categories
+final fetchAllCategoriesProvider = FutureProvider.autoDispose((ref) async {
+  print("🔵🔵🔵 fetchAllCategoriesProvider started");
+  final apiService = BannerApiService();
+  final categories = await apiService.getAllCategories();
+  print("🔵🔵🔵 Categories fetched: ${categories.length}");
+  
+  ref.read(bannerCategoryProvider.notifier).state = categories;
+  
+  // Auto-select first category
+  if (categories.isNotEmpty) {
+    ref.read(selectedCategoryIdProvider.notifier).state = categories.first.id;
+  }
+  
+  return categories;
+});
+
+// Fetch banners for specific category (FAMILY PROVIDER - योग्य)
+final fetchCategoryBannersProvider = FutureProvider.autoDispose.family<List<MyBanner>, String>((ref, categoryId) async {
+  print("🔴🔴🔴 Fetching banners for category ID: $categoryId");
+  
+  if (categoryId.isEmpty) return [];
+  
+  final apiService = BannerApiService();
+  final banners = await apiService.getBannersByCategory(categoryId);
+  print("🔴🔴🔴 Banners fetched: ${banners.length}");
+  
   return banners;
 });
 
-// Main Widget
-class AllBannersWidget extends ConsumerWidget {
-  const AllBannersWidget({super.key});
+// Category Banners Page
+class CategoryBannersPage extends ConsumerWidget {
+  final String categoryId;
+  final String categoryName;
+  
+  const CategoryBannersPage({
+    super.key,
+    required this.categoryId,
+    required this.categoryName,
+  });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final banners = ref.watch(allBannersProvider);
-    final bannerFuture = ref.watch(fetchAllBannersProvider);
+    final bannersAsync = ref.watch(fetchCategoryBannersProvider(categoryId));
     
-    return bannerFuture.when(
-      loading: () => _buildLoading(),
-      error: (error, stackTrace) => _buildError(error.toString(), ref),
-      data: (_) => _buildBanners(banners),
-    );
-  }
-
-  Widget _buildLoading() {
-    return SizedBox(
-      height: 170,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 16),
-        children: List.generate(3, (index) => 
-          Padding(
-            padding: EdgeInsets.only(right: index < 2 ? 12 : 0),
-            child: _buildShimmerCard(),
-          )
-        ),
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(categoryName),
+        backgroundColor: Colors.blue,
+        foregroundColor: Colors.white,
       ),
-    );
-  }
-
-  Widget _buildShimmerCard() {
-    return Container(
-      width: 220,
-      decoration: BoxDecoration(
-        color: Colors.grey[200],
-        borderRadius: BorderRadius.circular(18),
-      ),
-    );
-  }
-
-  Widget _buildError(String error, WidgetRef ref) {
-    return Container(
-      height: 170,
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.error_outline, color: Colors.red, size: 40),
-            const SizedBox(height: 10),
-            const Text(
-              'Failed to load banners',
-              style: TextStyle(color: Colors.grey),
-            ),
-            const SizedBox(height: 10),
-            ElevatedButton(
-              onPressed: () => ref.refresh(fetchAllBannersProvider),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.blue,
-                foregroundColor: Colors.white,
-              ),
-              child: const Text('Retry'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildBanners(List<Banner> banners) {
-    log("${banners}");
-    if (banners.isEmpty) {
-      return SizedBox(
-        height: 170,
-        child: Center(
+      body: bannersAsync.when(
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (error, stack) => Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(Icons.image_not_supported_outlined, 
-                  size: 50, color: Colors.grey[400]),
-              const SizedBox(height: 10),
-              const Text(
-                'No banners found',
-                style: TextStyle(color: Colors.grey),
+              Text('Error: $error'),
+              const SizedBox(height: 16),
+              ElevatedButton(
+                onPressed: () {
+                  ref.refresh(fetchCategoryBannersProvider(categoryId));
+                },
+                child: const Text('Retry'),
               ),
             ],
           ),
         ),
-      );
-    }
-    
-    return SizedBox(
-      height: 170,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 16),
-        children: [
-          ...banners.map((banner) {
-            return Padding(
-              padding: const EdgeInsets.only(right: 12),
-              child: _buildBannerCard(banner),
-            );
-          }).toList(),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildBannerCard(Banner banner) {
-    return Container(
-      width: 220,
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.grey.withOpacity(0.1),
-            blurRadius: 4,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(
-            child: Center(
-              child: banner.image.isNotEmpty
-                  ? Image.network(
-                      banner.image,
-                      fit: BoxFit.contain,
-                      loadingBuilder: (context, child, loadingProgress) {
-                        if (loadingProgress == null) return child;
-                        return Center(
-                          child: CircularProgressIndicator(
-                            value: loadingProgress.expectedTotalBytes != null
-                                ? loadingProgress.cumulativeBytesLoaded /
-                                    loadingProgress.expectedTotalBytes!
-                                : null,
-                          ),
-                        );
-                      },
-                      errorBuilder: (context, error, stackTrace) {
-                        return const Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(
-                              Icons.broken_image,
-                              color: Colors.grey,
-                              size: 40,
-                            ),
-                            SizedBox(height: 4),
-                            Text(
-                              'Image failed',
-                              style: TextStyle(fontSize: 10, color: Colors.grey),
-                            ),
-                          ],
-                        );
-                      },
-                    )
-                  : const Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.image,
-                          color: Colors.grey,
-                          size: 40,
-                        ),
-                        SizedBox(height: 4),
-                        Text(
-                          'No image',
-                          style: TextStyle(fontSize: 10, color: Colors.grey),
-                        ),
-                      ],
-                    ),
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            _parseHtml(banner.title),
-            style: const TextStyle(
-              fontWeight: FontWeight.w600,
-              fontSize: 16,
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-          Text(
-            _parseHtml(banner.subtitle),
-            style: const TextStyle(
-              fontSize: 12,
-              color: Colors.grey,
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ],
-      ),
-    );
-  }
-
-  String _parseHtml(String htmlString) {
-    if (htmlString.isEmpty) return '';
-    
-    String text = htmlString.replaceAll(RegExp(r'<[^>]*>'), '');
-    
-    text = text
-        .replaceAll('&amp;', '&')
-        .replaceAll('&lt;', '<')
-        .replaceAll('&gt;', '>')
-        .replaceAll('&quot;', '"')
-        .replaceAll('&#39;', "'")
-        .replaceAll('&nbsp;', ' ');
-    
-    return text.trim();
-  }
-}
-
-// Alternative: Simple version like your original code
-class SimpleBannersWidget extends ConsumerWidget {
-  const SimpleBannersWidget({super.key});
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final banners = ref.watch(allBannersProvider);
-    
-    if (banners.isEmpty) {
-      return SizedBox(
-        height: 170,
-        child: ListView(
-          scrollDirection: Axis.horizontal,
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          children: [
-            _buildShimmer(),
-            const SizedBox(width: 12),
-            _buildShimmer(),
-            const SizedBox(width: 12),
-            _buildShimmer(),
-          ],
-        ),
-      );
-    }
-    
-    return SizedBox(
-      height: 170,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 16),
-        children: [
-          ...banners.map((banner) {
-            return Padding(
-              padding: const EdgeInsets.only(right: 12),
-              child: rideCard(
-                title: _cleanText(banner.title),
-                subtitle: _cleanText(banner.subtitle),
-                image: banner.image,
+        data: (banners) {
+          if (banners.isEmpty) {
+            return Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.image_not_supported, size: 80, color: Colors.grey),
+                  const SizedBox(height: 16),
+                  Text(
+                    'No banners found in this category',
+                    style: TextStyle(fontSize: 16, color: Colors.grey),
+                  ),
+                ],
               ),
             );
-          }).toList(),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildShimmer() {
-    return Container(
-      width: 220,
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.grey[200],
-        borderRadius: BorderRadius.circular(18),
-      ),
-    );
-  }
-
-  Widget rideCard({
-    required String title,
-    required String subtitle,
-    required String image,
-  }) {
-    return Container(
-      width: 220,
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(
-            child: Center(
-              child: image.isNotEmpty
-                  ? Image.network(
-                      image,
-                      fit: BoxFit.contain,
-                      errorBuilder: (context, error, stackTrace) {
-                        return const Icon(Icons.error, color: Colors.grey);
-                      },
-                    )
-                  : const Icon(Icons.image, color: Colors.grey),
+          }
+          
+          return GridView.builder(
+            padding: const EdgeInsets.all(16),
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 2,
+              childAspectRatio: 0.8,
+              crossAxisSpacing: 12,
+              mainAxisSpacing: 12,
             ),
-          ),
-          const SizedBox(height: 8),
-          Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
-          Text(
-            subtitle,
-            style: const TextStyle(fontSize: 12, color: Colors.grey),
-          ),
-        ],
+            itemCount: banners.length,
+            itemBuilder: (context, index) {
+              final banner = banners[index];
+              return _buildBannerGridItem(banner);
+            },
+          );
+        },
       ),
     );
   }
 
-  String _cleanText(String text) {
-    return text.replaceAll(RegExp(r'<[^>]*>'), '').trim();
+  Widget _buildBannerGridItem(MyBanner banner) {
+    return GestureDetector(
+      onTap: () {
+        print("Banner clicked: ${banner.cleanTitle}");
+      },
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.grey.withOpacity(0.1),
+              blurRadius: 4,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              flex: 3,
+              child: ClipRRect(
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+                child: banner.image.isNotEmpty
+                    ? Image.network(
+                        banner.image,
+                        width: double.infinity,
+                        fit: BoxFit.cover,
+                        errorBuilder: (context, error, stackTrace) {
+                          return Container(
+                            color: Colors.grey[200],
+                            child: Center(
+                              child: Icon(Icons.broken_image, color: Colors.grey),
+                            ),
+                          );
+                        },
+                      )
+                    : Container(
+                        color: Colors.grey[200],
+                        child: const Center(
+                          child: Icon(Icons.image, color: Colors.grey),
+                        ),
+                      ),
+              ),
+            ),
+            
+            Expanded(
+              flex: 2,
+              child: Padding(
+                padding: const EdgeInsets.all(8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      banner.cleanTitle,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      banner.cleanSubtitle,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey[600],
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }

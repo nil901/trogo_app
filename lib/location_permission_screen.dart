@@ -77,10 +77,8 @@ class _LocationPermissionScreenState extends State<LocationPermissionScreen>
         setState(() => _currentStep = 2);
         await _fetchCurrentLocation();
       } else if (permission.isDenied) {
-        setState(() {
-          _isLoading = false;
-          _currentStep = 1;
-        });
+        // Prompt the user to grant permission instead of silently stopping.
+        await _checkAndRequestLocationPermission();
       } else if (permission.isPermanentlyDenied) {
         setState(() {
           _errorMessage = 'Location permission is required. Please enable it from app settings.';
@@ -97,8 +95,24 @@ class _LocationPermissionScreenState extends State<LocationPermissionScreen>
 
   Future<void> _fetchCurrentLocation() async {
     try {
-      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      // Ensure Geolocator permissions are available
+      LocationPermission geoPermission = await Geolocator.checkPermission();
+      if (geoPermission == LocationPermission.denied ||
+          geoPermission == LocationPermission.deniedForever) {
+        geoPermission = await Geolocator.requestPermission();
+      }
 
+      if (geoPermission == LocationPermission.denied ||
+          geoPermission == LocationPermission.deniedForever) {
+        setState(() {
+          _errorMessage = 'Location permission is required. Please enable it.';
+          _isLoading = false;
+          _currentStep = 1;
+        });
+        return;
+      }
+
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
         setState(() {
           _errorMessage = 'Location services are disabled. Please enable them.';
@@ -126,9 +140,9 @@ class _LocationPermissionScreenState extends State<LocationPermissionScreen>
           address: address,
         );
         _currentStep = 3;
+        _isLoading = false;
       });
-
-      // Send location to API
+      // Send location to API (skip server call if no auth token)
       final bool apiSuccess = await _sendLocationToAPI(
         latitude: position.latitude,
         longitude: position.longitude,
@@ -136,8 +150,14 @@ class _LocationPermissionScreenState extends State<LocationPermissionScreen>
 
       if (apiSuccess) {
         await Future.delayed(const Duration(seconds: 1));
-        _navigateToMainScreen();
+        if (mounted) _navigateToMainScreen();
       } else {
+        // If API failed but there is no token, still navigate as a fallback
+        if (tokens == null || tokens!.trim().isEmpty) {
+          if (mounted) _navigateToMainScreen();
+          return;
+        }
+
         setState(() {
           _errorMessage = 'Failed to update location on server. Please try again.';
           _isLoading = false;
@@ -158,23 +178,25 @@ class _LocationPermissionScreenState extends State<LocationPermissionScreen>
     required double longitude,
   }) async {
     try {
+      // Read token fresh in case it was updated after widget init
+      final String? token = AppPreference().getString(PreferencesKey.authToken);
+
+      // If there's no auth token, skip server update and return success
+      if (token == null || token.trim().isEmpty) return true;
+
       final response = await http.post(
         Uri.parse('${baseUrl}passenger/location'),
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': 'Bearer $tokens', 
+          'Authorization': 'Bearer $token',
         },
         body: json.encode({
           "latitude": latitude,
           "longitude": longitude,
         }),
       );
-      
-      if (response.statusCode == 200 || response.statusCode == 201) {
-        return true;
-      } else {
-        return false;
-      }
+
+      return response.statusCode == 200 || response.statusCode == 201;
     } catch (e) {
       return false;
     }
@@ -342,8 +364,6 @@ class _LocationPermissionScreenState extends State<LocationPermissionScreen>
 
   @override
   Widget build(BuildContext context) {
-    final size = MediaQuery.of(context).size;
-    
     return Scaffold(
       backgroundColor: Colors.white,
       body: Stack(
@@ -356,293 +376,242 @@ class _LocationPermissionScreenState extends State<LocationPermissionScreen>
           ),
           
           SafeArea(
-            child: SingleChildScrollView(
-              child: SizedBox(
-                height: size.height - MediaQuery.of(context).padding.top,
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    // Top Section
-                    Expanded(
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 30),
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            // Animated Location Icon
-                            ScaleTransition(
-                              scale: _slideAnimation,
-                              child: Container(
-                                width: 150,
-                                height: 150,
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  color: Colors.black.withOpacity(0.05),
-                                  border: Border.all(
-                                    color: Colors.black.withOpacity(0.1),
-                                    width: 2,
-                                  ),
+            child: Column(
+              children: [
+                // Top Section - Scrollable
+                Expanded(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.symmetric(horizontal: 30),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        // Animated Location Icon
+                        ScaleTransition(
+                          scale: _slideAnimation,
+                          child: Container(
+                            width: 150,
+                            height: 150,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: Colors.black.withOpacity(0.05),
+                              border: Border.all(
+                                color: Colors.black.withOpacity(0.1),
+                                width: 2,
+                              ),
+                            ),
+                            child: Stack(
+                              alignment: Alignment.center,
+                              children: [
+                                Icon(
+                                  Icons.location_on,
+                                  size: 70,
+                                  color: Colors.black,
                                 ),
-                                child: Stack(
-                                  alignment: Alignment.center,
-                                  children: [
-                                    Icon(
-                                      Icons.location_on,
-                                      size: 70,
+                                if (_currentStep == 2)
+                                  Positioned.fill(
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 3,
                                       color: Colors.black,
                                     ),
-                                    if (_currentStep == 2)
-                                      Positioned.fill(
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 3,
-                                          color: Colors.black,
-                                        ),
-                                      ),
-                                    if (_currentStep == 3)
-                                      Positioned(
-                                        bottom: 10,
-                                        right: 10,
-                                        child: Container(
-                                          padding: const EdgeInsets.all(6),
-                                          decoration: BoxDecoration(
-                                            color: Colors.green,
-                                            shape: BoxShape.circle,
-                                          ),
-                                          child: Icon(
-                                            Icons.check,
-                                            color: Colors.white,
-                                            size: 20,
-                                          ),
-                                        ),
-                                      ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                            
-                            const SizedBox(height: 40),
-                            
-                            // Title
-                            FadeTransition(
-                              opacity: _fadeAnimation,
-                              child: Text(
-                                _currentStep == 3 
-                                    ? "Location Found!"
-                                    : "Location Access",
-                                style: TextStyle(
-                                  fontSize: 32,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.black,
-                                  letterSpacing: 0.5,
-                                ),
-                                textAlign: TextAlign.center,
-                              ),
-                            ),
-                            
-                            const SizedBox(height: 16),
-                            
-                            // Description
-                            FadeTransition(
-                              opacity: _fadeAnimation,
-                              child: Text(
-                                _currentStep == 1
-                                    ? "We need your location to show vehicles\naround you and provide accurate services."
-                                    : _currentStep == 2
-                                        ? "Fetching your current location...\nThis may take a few seconds."
-                                        : "Great! We've found your location.\nRedirecting to main screen...",
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  color: Colors.grey.shade600,
-                                  height: 1.5,
-                                ),
-                              ),
-                            ),
-                            
-                            const SizedBox(height: 40),
-                            
-                            // Step Indicator
-                            _buildStepIndicator(),
-                            
-                            const SizedBox(height: 30),
-                            
-                            // Location Preview
-                            // if (_selectedLocation != null)
-                            //   FadeTransition(
-                            //     opacity: _fadeAnimation,
-                            //     child: Container(
-                            //       width: double.infinity,
-                            //       padding: const EdgeInsets.all(16),
-                            //       decoration: BoxDecoration(
-                            //         color: Colors.green.shade50,
-                            //         borderRadius: BorderRadius.circular(16),
-                            //         border: Border.all(color: Colors.green.shade100),
-                            //       ),
-                            //       child: Column(
-                            //         crossAxisAlignment: CrossAxisAlignment.start,
-                            //         children: [
-                            //           Row(
-                            //             children: [
-                            //               Icon(
-                            //                 Icons.location_pin,
-                            //                 color: Colors.green.shade700,
-                            //                 size: 20,
-                            //               ),
-                            //               const SizedBox(width: 8),
-                            //               Text(
-                            //                 "Current Location",
-                            //                 style: TextStyle(
-                            //                   fontWeight: FontWeight.bold,
-                            //                   color: Colors.green.shade800,
-                            //                   fontSize: 14,
-                            //                 ),
-                            //               ),
-                            //             ],
-                            //           ),
-                            //           const SizedBox(height: 8),
-                            //           Text(
-                            //             _selectedLocation!.address ?? "Fetching address...",
-                            //             style: TextStyle(
-                            //               color: Colors.green.shade700,
-                            //               fontSize: 13,
-                            //             ),
-                            //           ),
-                            //         ],
-                            //       ),
-                            //     ),
-                            //   ),
-                            
-                            // Error Message
-                            if (_errorMessage.isNotEmpty)
-                              FadeTransition(
-                                opacity: _fadeAnimation,
-                                child: Container(
-                                  width: double.infinity,
-                                  margin: const EdgeInsets.only(top: 20),
-                                  padding: const EdgeInsets.all(16),
-                                  decoration: BoxDecoration(
-                                    color: Colors.red.shade50,
-                                    borderRadius: BorderRadius.circular(16),
-                                    border: Border.all(color: Colors.red.shade100),
                                   ),
-                                  child: Row(
-                                    children: [
-                                      Icon(
-                                        Icons.error_outline,
-                                        color: Colors.red.shade700,
+                                if (_currentStep == 3)
+                                  Positioned(
+                                    bottom: 10,
+                                    right: 10,
+                                    child: Container(
+                                      padding: const EdgeInsets.all(6),
+                                      decoration: BoxDecoration(
+                                        color: Colors.green,
+                                        shape: BoxShape.circle,
+                                      ),
+                                      child: Icon(
+                                        Icons.check,
+                                        color: Colors.white,
                                         size: 20,
                                       ),
-                                      const SizedBox(width: 12),
-                                      Expanded(
-                                        child: Text(
-                                          _errorMessage,
-                                          style: TextStyle(
-                                            color: Colors.red.shade700,
-                                            fontSize: 13,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
+                                    ),
                                   ),
-                                ),
-                              ),
-                          ],
+                              ],
+                            ),
+                          ),
                         ),
-                      ),
-                    ),
-                    
-                    // Bottom Button Section
-                    Padding(
-                      padding: const EdgeInsets.all(30),
-                      child: Column(
-                        children: [
-                          // Main Action Button
-                          SizedBox(
-                            width: double.infinity,
-                            height: 56,
-                            child: ElevatedButton(
-                              onPressed: _isLoading ? null : _checkAndRequestLocationPermission,
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.black,
-                                foregroundColor: Colors.white,
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(16),
-                                ),
-                                elevation: 0,
-                                shadowColor: Colors.transparent,
+                        
+                        const SizedBox(height: 40),
+                        
+                        // Title
+                        FadeTransition(
+                          opacity: _fadeAnimation,
+                          child: Text(
+                            _currentStep == 3 
+                                ? "Location Found!"
+                                : "Location Access",
+                            style: TextStyle(
+                              fontSize: 32,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.black,
+                              letterSpacing: 0.5,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                        
+                        const SizedBox(height: 16),
+                        
+                        // Description
+                        FadeTransition(
+                          opacity: _fadeAnimation,
+                          child: Text(
+                            _currentStep == 1
+                                ? "We need your location to show vehicles\naround you and provide accurate services."
+                                : _currentStep == 2
+                                    ? "Fetching your current location...\nThis may take a few seconds."
+                                    : "Great! We've found your location.\nRedirecting to main screen...",
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 16,
+                              color: Colors.grey.shade600,
+                              height: 1.5,
+                            ),
+                          ),
+                        ),
+                        
+                        const SizedBox(height: 40),
+                        
+                        // Step Indicator
+                        _buildStepIndicator(),
+                        
+                        const SizedBox(height: 30),
+                        
+                        // Error Message
+                        if (_errorMessage.isNotEmpty)
+                          FadeTransition(
+                            opacity: _fadeAnimation,
+                            child: Container(
+                              width: double.infinity,
+                              margin: const EdgeInsets.only(top: 20),
+                              padding: const EdgeInsets.all(16),
+                              decoration: BoxDecoration(
+                                color: Colors.red.shade50,
+                                borderRadius: BorderRadius.circular(16),
+                                border: Border.all(color: Colors.red.shade100),
                               ),
-                              child: _isLoading
-                                  ? Row(
-                                      mainAxisAlignment: MainAxisAlignment.center,
-                                      children: [
-                                        SizedBox(
-                                          width: 20,
-                                          height: 20,
-                                          child: CircularProgressIndicator(
-                                            strokeWidth: 2,
-                                            color: Colors.white,
-                                          ),
-                                        ),
-                                        const SizedBox(width: 12),
-                                        Text(
-                                          _currentStep == 2 
-                                              ? "Fetching Location..." 
-                                              : "Processing...",
-                                          style: TextStyle(
-                                            fontSize: 16,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                      ],
-                                    )
-                                  : Text(
-                                      _currentStep == 3 
-                                          ? "Continue to App"
-                                          : "Allow Location Access",
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    Icons.error_outline,
+                                    color: Colors.red.shade700,
+                                    size: 20,
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Text(
+                                      _errorMessage,
+                                      style: TextStyle(
+                                        color: Colors.red.shade700,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+                
+                // Bottom Button Section
+                Padding(
+                  padding: const EdgeInsets.all(30),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Main Action Button
+                      SizedBox(
+                        width: double.infinity,
+                        height: 56,
+                        child: ElevatedButton(
+                          onPressed: _isLoading ? null : _checkAndRequestLocationPermission,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.black,
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            elevation: 0,
+                            shadowColor: Colors.transparent,
+                          ),
+                          child: _isLoading
+                              ? Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    SizedBox(
+                                      width: 20,
+                                      height: 20,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Text(
+                                      _currentStep == 2 
+                                          ? "Fetching Location..." 
+                                          : "Processing...",
                                       style: TextStyle(
                                         fontSize: 16,
                                         fontWeight: FontWeight.bold,
                                       ),
                                     ),
-                            ),
-                          ),
-                          
-                          const SizedBox(height: 16),
-                          
-                          // Alternative Option
-                          TextButton(
-                            onPressed: () {
-                              _showManualLocationDialog();
-                            },
-                            style: TextButton.styleFrom(
-                              foregroundColor: Colors.black,
-                            ),
-                            child: const Text(
-                              "Enter location manually",
-                              style: TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w600,
-                                decoration: TextDecoration.underline,
-                              ),
-                            ),
-                          ),
-                          
-                          // Privacy Info
-                          const SizedBox(height: 20),
-                          Text(
-                            "Your location data is used only to find nearby\nvehicles and is never shared with third parties.",
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: Colors.grey.shade500,
-                            ),
-                          ),
-                        ],
+                                  ],
+                                )
+                              : Text(
+                                  _currentStep == 3 
+                                      ? "Continue to App"
+                                      : "Allow Location Access",
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                        ),
                       ),
-                    ),
-                  ],
+                      
+                      const SizedBox(height: 16),
+                      
+                      // Alternative Option
+                      TextButton(
+                        onPressed: () {
+                          _showManualLocationDialog();
+                        },
+                        style: TextButton.styleFrom(
+                          foregroundColor: Colors.black,
+                        ),
+                        child: const Text(
+                          "Enter location manually",
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            decoration: TextDecoration.underline,
+                          ),
+                        ),
+                      ),
+                      
+                      // Privacy Info
+                      const SizedBox(height: 20),
+                      Text(
+                        "Your location data is used only to find nearby\nvehicles and is never shared with third parties.",
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Colors.grey.shade500,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
+              ],
             ),
           ),
         ],

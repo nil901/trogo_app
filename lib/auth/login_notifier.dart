@@ -593,7 +593,7 @@ Future<List<FareEstimate>> fareEstimateApi({
   required String pickupAddress,
   required List<double> pickupCoordinates,
   required String dropAddress,
-  
+
   required List<double> dropCoordinates,
 }) async {
   // passenger
@@ -605,14 +605,14 @@ Future<List<FareEstimate>> fareEstimateApi({
       "pickup": {"address": pickupAddress, "coordinates": pickupCoordinates},
       "drop": {"address": dropAddress, "coordinates": dropCoordinates},
     };
-    
+
     final response = await ApiService().postRequest(
       fareEstimateUrl, // {{baseUrl}}/api/passenger/fare-estimate
       body,
     );
     print(fareEstimateUrl);
     print(body);
-    
+
     if (response != null && response.statusCode == 200) {
       final List data = response.data['vehicles'];
 

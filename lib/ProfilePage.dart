@@ -75,7 +75,7 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
         actions: [
           InkWell(
             onTap: () {
-              // Navigate to profile screen
+              // Navigat e to profile screen
               Navigator.push(
                 context,
                 MaterialPageRoute(builder: (context) => ProfileScreen()),

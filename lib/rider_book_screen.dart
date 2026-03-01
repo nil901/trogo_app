@@ -28,7 +28,11 @@ class RideHomePage extends ConsumerStatefulWidget {
   final SelectedLocation? currentLocation;
   final bool isGoodsTransport;
 
-  const RideHomePage({super.key, this.currentLocation, this.isGoodsTransport = false});
+  const RideHomePage({
+    super.key,
+    this.currentLocation,
+    this.isGoodsTransport = false,
+  });
 
   @override
   _RideHomePageState createState() => _RideHomePageState();
@@ -660,7 +664,6 @@ class _RideHomePageState extends ConsumerState<RideHomePage> {
                 selectedVehicleName,
                 selectedVehicleId,
                 selectedPrice,
-                
               ) async {
                 print('🚗 Vehicle selected in RideHomePage:');
                 print('   Name: $selectedVehicleName');

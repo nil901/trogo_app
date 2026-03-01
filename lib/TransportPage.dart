@@ -86,9 +86,8 @@ class _GoodsTransportPageState extends ConsumerState<GoodsTransportPage> {
                       context,
                       MaterialPageRoute(
                         builder:
-                            (_) => RideHomePage(
-                              isGoodsTransport: true,
-                              currentLocation: widget.selectedLocation,
+                            (_) => GoodsFlowManager(
+                            
                             ),
                       ),
                     );

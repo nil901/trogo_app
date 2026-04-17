@@ -1,11 +1,9 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:geocoding/geocoding.dart';
-import 'package:http/http.dart' as http;
-import 'package:trogo_app/api_service/urls.dart';
+import 'package:trogo_app/auth/profile_update_screen.dart';
 import 'package:trogo_app/main_bottom_nav.dart';
 import 'package:trogo_app/prefs/PreferencesKey.dart';
 import 'package:trogo_app/prefs/app_preference.dart';
@@ -124,6 +122,7 @@ class _LocationPermissionScreenState extends State<LocationPermissionScreen>
 
       Position position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 10),
       );
 
       // Get address from coordinates
@@ -132,38 +131,22 @@ class _LocationPermissionScreenState extends State<LocationPermissionScreen>
         position.longitude,
       );
 
+      final selectedLocation = SelectedLocation(
+        latitude: position.latitude,
+        longitude: position.longitude,
+        address: address,
+      );
+
+      await _persistSelectedLocation(selectedLocation);
+
       // Store the current location with address
       setState(() {
-        _selectedLocation = SelectedLocation(
-          latitude: position.latitude,
-          longitude: position.longitude,
-          address: address,
-        );
+        _selectedLocation = selectedLocation;
         _currentStep = 3;
         _isLoading = false;
       });
-      // Send location to API (skip server call if no auth token)
-      final bool apiSuccess = await _sendLocationToAPI(
-        latitude: position.latitude,
-        longitude: position.longitude,
-      );
-
-      if (apiSuccess) {
-        await Future.delayed(const Duration(seconds: 1));
-        if (mounted) _navigateToMainScreen();
-      } else {
-        // If API failed but there is no token, still navigate as a fallback
-        if (tokens == null || tokens!.trim().isEmpty) {
-          if (mounted) _navigateToMainScreen();
-          return;
-        }
-
-        setState(() {
-          _errorMessage = 'Failed to update location on server. Please try again.';
-          _isLoading = false;
-          _currentStep = 1;
-        });
-      }
+      await Future.delayed(const Duration(seconds: 1));
+      if (mounted) _navigateToMainScreen();
     } catch (e) {
       setState(() {
         _errorMessage = 'Failed to get location: ${e.toString()}';
@@ -173,33 +156,19 @@ class _LocationPermissionScreenState extends State<LocationPermissionScreen>
     }
   }
 
-  Future<bool> _sendLocationToAPI({
-    required double latitude,
-    required double longitude,
-  }) async {
-    try {
-      // Read token fresh in case it was updated after widget init
-      final String? token = AppPreference().getString(PreferencesKey.authToken);
-
-      // If there's no auth token, skip server update and return success
-      if (token == null || token.trim().isEmpty) return true;
-
-      final response = await http.post(
-        Uri.parse('${baseUrl}passenger/location'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-        body: json.encode({
-          "latitude": latitude,
-          "longitude": longitude,
-        }),
-      );
-
-      return response.statusCode == 200 || response.statusCode == 201;
-    } catch (e) {
-      return false;
-    }
+  Future<void> _persistSelectedLocation(SelectedLocation location) async {
+    await AppPreference().setDouble(
+      PreferencesKey.savedLocationLat,
+      location.latitude,
+    );
+    await AppPreference().setDouble(
+      PreferencesKey.savedLocationLng,
+      location.longitude,
+    );
+    await AppPreference().setString(
+      PreferencesKey.savedLocationAddress,
+      location.address ?? '',
+    );
   }
 
   Future<void> _checkAndRequestLocationPermission() async {
@@ -270,8 +239,31 @@ class _LocationPermissionScreenState extends State<LocationPermissionScreen>
     }
   }
 
+  Future<SelectedLocation> _resolveManualLocation(String manualAddress) async {
+    try {
+      final locations = await locationFromAddress(manualAddress);
+      if (locations.isNotEmpty) {
+        final location = locations.first;
+        return SelectedLocation(
+          latitude: location.latitude,
+          longitude: location.longitude,
+          address: manualAddress,
+        );
+      }
+    } catch (_) {}
+
+    return SelectedLocation(
+      latitude: 0.0,
+      longitude: 0.0,
+      address: manualAddress,
+    );
+  }
+
   void _navigateToMainScreen() {
     if (_autoNavigating || _selectedLocation == null) return;
+
+    final userName = AppPreference().getString(PreferencesKey.userName).trim();
+    final shouldOpenProfileUpdate = userName.isEmpty;
     
     setState(() {
       _autoNavigating = true;
@@ -281,7 +273,14 @@ class _LocationPermissionScreenState extends State<LocationPermissionScreen>
       context,
       PageRouteBuilder(
         pageBuilder: (context, animation, secondaryAnimation) =>
-            MainBottomNav(selectedLocation: _selectedLocation!),
+            shouldOpenProfileUpdate
+                ? ProfileScreen(
+                  navigateToHomeOnComplete: true,
+                  completionPageBuilder:
+                      (context) =>
+                          MainBottomNav(selectedLocation: _selectedLocation!),
+                )
+                : MainBottomNav(selectedLocation: _selectedLocation!),
         transitionsBuilder: (context, animation, secondaryAnimation, child) {
           return FadeTransition(
             opacity: animation,
@@ -673,25 +672,19 @@ class _LocationPermissionScreenState extends State<LocationPermissionScreen>
                 if (manualAddress.isNotEmpty) {
                   Navigator.pop(context);
                   
+                  final selectedLocation = await _resolveManualLocation(
+                    manualAddress,
+                  );
+
+                  await _persistSelectedLocation(selectedLocation);
+
                   setState(() {
-                    _selectedLocation = SelectedLocation(
-                      latitude: 19.0760, // Default coordinates for Mumbai
-                      longitude: 72.8777,
-                      address: manualAddress,
-                    );
+                    _selectedLocation = selectedLocation;
                     _currentStep = 3;
                   });
                   
-                  // Send to API
-                  final bool apiSuccess = await _sendLocationToAPI(
-                    latitude: 19.0760,
-                    longitude: 72.8777,
-                  );
-                  
-                  if (apiSuccess) {
-                    await Future.delayed(const Duration(seconds: 1));
-                    _navigateToMainScreen();
-                  }
+                  await Future.delayed(const Duration(seconds: 1));
+                  _navigateToMainScreen();
                 }
               },
               style: ElevatedButton.styleFrom(

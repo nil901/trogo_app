@@ -1,32 +1,38 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:geocoding/geocoding.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:trogo_app/location_permission_screen.dart';
+import 'package:trogo_app/wigets/drop_provider.dart';
 import 'package:uuid/uuid.dart';
 
-class SearchDestinationUI extends StatefulWidget {
+class SearchDestinationUI extends ConsumerStatefulWidget {
   final SelectedLocation? currentLocation;
   final VoidCallback onSearchTap;
-  final Function(Map<String, dynamic>)? onNext; // Changed
+  final Function(Map<String, dynamic>)? onNext;
   final Function(Map<String, dynamic>)? onDestinationSelected;
-  final String mode; // 'pickup' or 'dropoff'
-  final String? initialValue; // Initial search text if editing
+  final String mode;
+  final String? initialValue;
 
   const SearchDestinationUI({
     Key? key,
     required this.currentLocation,
     required this.onSearchTap,
-    required this.onNext, // Required but accepts parameter
+    required this.onNext,
     this.onDestinationSelected,
-    this.mode = 'dropoff', // Default is dropoff selection
+    this.mode = 'dropoff',
     this.initialValue,
   }) : super(key: key);
 
   @override
-  _SearchDestinationUIState createState() => _SearchDestinationUIState();
+  ConsumerState<SearchDestinationUI> createState() =>
+      _SearchDestinationUIState();
 }
 
-class _SearchDestinationUIState extends State<SearchDestinationUI> {
+class _SearchDestinationUIState
+    extends ConsumerState<SearchDestinationUI> {
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
 
@@ -36,6 +42,7 @@ class _SearchDestinationUIState extends State<SearchDestinationUI> {
 
   List<Map<String, dynamic>> _predictions = [];
   bool _isLoading = false;
+  bool _isFetchingCurrentLocation = false;
   bool _showRecentLocations = true;
 
   final String _apiKey = 'AIzaSyBGv9znbx4hAdCp_6YK0-HO2XVKI4ZXALk';
@@ -71,6 +78,24 @@ class _SearchDestinationUIState extends State<SearchDestinationUI> {
           _showRecentLocations = false;
         });
       });
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant SearchDestinationUI oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    final isUsingCurrentLocation =
+        _selectedLocationData?['place_id'] == '${widget.mode}_current_location';
+    final currentLocationChanged =
+        oldWidget.currentLocation?.latitude != widget.currentLocation?.latitude ||
+        oldWidget.currentLocation?.longitude != widget.currentLocation?.longitude ||
+        oldWidget.currentLocation?.address != widget.currentLocation?.address;
+
+    if (isUsingCurrentLocation &&
+        currentLocationChanged &&
+        widget.currentLocation != null) {
+      _applyCurrentLocation(widget.currentLocation!);
     }
   }
 
@@ -260,8 +285,112 @@ class _SearchDestinationUIState extends State<SearchDestinationUI> {
     });
   }
 
+  void _applyCurrentLocation(SelectedLocation location) {
+    final locationLabel =
+        widget.mode == 'pickup' ? 'Current Pickup Location' : 'Current Location';
+    final currentLocData = {
+      'description': locationLabel,
+      'address': location.address,
+      'formatted_address': location.address,
+      'latitude': location.latitude,
+      'longitude': location.longitude,
+      'place_id': '${widget.mode}_current_location',
+    };
+
+    setState(() {
+      _selectedDestination = locationLabel;
+      _selectedAddress = location.address;
+      _selectedLocationData = currentLocData;
+      _showRecentLocations = false;
+      _predictions.clear();
+    });
+
+    widget.onDestinationSelected?.call(currentLocData);
+  }
+
+  Future<String> _getAddressFromLatLng(double latitude, double longitude) async {
+    try {
+      final placemarks = await placemarkFromCoordinates(latitude, longitude);
+      if (placemarks.isEmpty) return 'Current Location';
+
+      final place = placemarks.first;
+      final parts = [
+        place.street,
+        place.subLocality,
+        place.locality,
+        place.administrativeArea,
+      ]
+          .where((part) => part != null && part!.trim().isNotEmpty)
+          .cast<String>()
+          .toList();
+
+      return parts.isNotEmpty ? parts.join(', ') : 'Current Location';
+    } catch (e) {
+      print('Error getting address from coordinates: $e');
+      return 'Current Location';
+    }
+  }
+
+  Future<void> _useCurrentLocation() async {
+    if (_isFetchingCurrentLocation) return;
+
+    setState(() {
+      _isFetchingCurrentLocation = true;
+    });
+
+    try {
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        throw Exception('Location services are disabled');
+      }
+
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        throw Exception('Location permission is not granted');
+      }
+
+      final position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+
+      final address = await _getAddressFromLatLng(
+        position.latitude,
+        position.longitude,
+      );
+
+      _applyCurrentLocation(
+        SelectedLocation(
+          latitude: position.latitude,
+          longitude: position.longitude,
+          address: address,
+        ),
+      );
+    } catch (e) {
+      print('Error fetching latest current location: $e');
+      if (widget.currentLocation != null) {
+        _applyCurrentLocation(widget.currentLocation!);
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isFetchingCurrentLocation = false;
+        });
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final recentDrops = ref.watch(recentDropProvider);
+    final hasSelectedDropoff =
+        widget.mode == 'dropoff' && _selectedDestination != null;
+    final recentLocationsToShow =
+        widget.mode == 'pickup' ? _recentLocations : const <Map<String, dynamic>>[];
     return Container(
       color: Colors.white,
       child: Column(
@@ -415,7 +544,7 @@ class _SearchDestinationUIState extends State<SearchDestinationUI> {
           SizedBox(height: 18),
       
           /// LOADING INDICATOR
-          if (_isLoading)
+          if (_isLoading || _isFetchingCurrentLocation)
             Center(
               child: Padding(
                 padding: EdgeInsets.symmetric(vertical: 10),
@@ -429,75 +558,134 @@ class _SearchDestinationUIState extends State<SearchDestinationUI> {
       
           /// SELECTED LOCATION DISPLAY
           if (_selectedDestination != null)
-            Container(
-              padding: EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: widget.mode == 'pickup' ? Colors.blue[50] : Colors.orange[50],
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: widget.mode == 'pickup' ? Colors.blue : Colors.orange),
-              ),
-              child: Row(
-                children: [
-                  Icon(
-                    widget.mode == 'pickup' ? Icons.location_on : Icons.flag,
-                    color: widget.mode == 'pickup' ? Colors.blue : Colors.orange,
-                    size: 16,
+            Builder(
+              builder: (context) {
+                final accentColor =
+                    widget.mode == 'pickup'
+                        ? const Color(0xFF1677FF)
+                        : const Color(0xFFF97316);
+                final softColor =
+                    widget.mode == 'pickup'
+                        ? const Color(0xFFEAF3FF)
+                        : const Color(0xFFFFF1E8);
+                final iconData =
+                    widget.mode == 'pickup' ? Icons.location_on : Icons.flag;
+
+                return Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [softColor, Colors.white],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(color: accentColor.withOpacity(0.22)),
+                    boxShadow: [
+                      BoxShadow(
+                        color: accentColor.withOpacity(0.08),
+                        blurRadius: 18,
+                        offset: const Offset(0, 10),
+                      ),
+                    ],
                   ),
-                  SizedBox(width: 8),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          widget.mode == 'pickup' ? "Selected Pickup:" : "Selected Destination:",
-                          style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
-                            color: widget.mode == 'pickup' ? Colors.blue[800] : Colors.orange[800],
-                          ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: accentColor.withOpacity(0.12),
+                          borderRadius: BorderRadius.circular(14),
                         ),
-                        SizedBox(height: 2),
-                        Text(
-                          _selectedDestination!,
-                          style: TextStyle(
-                            fontSize: 10,
-                            color: widget.mode == 'pickup' ? Colors.blue[700] : Colors.orange[700],
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        if (_selectedAddress != null)
-                          Text(
-                            _selectedAddress!,
-                            style: TextStyle(
-                              fontSize: 9,
-                              color: widget.mode == 'pickup' ? Colors.blue[600] : Colors.orange[600],
+                        child: Icon(iconData, color: accentColor, size: 18),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 4,
+                              ),
+                              decoration: BoxDecoration(
+                                color: accentColor.withOpacity(0.10),
+                                borderRadius: BorderRadius.circular(30),
+                              ),
+                              child: Text(
+                                widget.mode == 'pickup'
+                                    ? "Selected Pickup"
+                                    : "Selected Destination",
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w700,
+                                  color: accentColor,
+                                  letterSpacing: 0.2,
+                                ),
+                              ),
                             ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+                            const SizedBox(height: 10),
+                            Text(
+                              _selectedDestination!,
+                              style: const TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700,
+                                color: Color(0xFF111827),
+                                height: 1.2,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            if (_selectedAddress != null) ...[
+                              const SizedBox(height: 4),
+                              Text(
+                                _selectedAddress!,
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  color: Color(0xFF6B7280),
+                                  height: 1.3,
+                                ),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      GestureDetector(
+                        onTap: _clearSelection,
+                        child: Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: accentColor.withOpacity(0.18),
+                            ),
                           ),
-                      ],
-                    ),
+                          child: Icon(
+                            Icons.close,
+                            color: accentColor,
+                            size: 16,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                  GestureDetector(
-                    onTap: _clearSelection,
-                    child: Icon(
-                      Icons.close,
-                      color: widget.mode == 'pickup' ? Colors.blue : Colors.orange,
-                      size: 16,
-                    ),
-                  ),
-                ],
-              ),
+                );
+              },
             ),
       
           SizedBox(height: _selectedDestination != null ? 18 : 0),
-      
-         
-          SizedBox(height: 22),
+          SizedBox(height: hasSelectedDropoff ? 8 : 22),
       
           /// SEARCH RESULTS / RECENT LOCATIONS
-          if (_searchController.text.isNotEmpty && _predictions.isNotEmpty)
+          if (!hasSelectedDropoff &&
+              _searchController.text.isNotEmpty &&
+              _predictions.isNotEmpty)
             ListView.builder(
               shrinkWrap: true,
               physics: NeverScrollableScrollPhysics(),
@@ -507,7 +695,8 @@ class _SearchDestinationUIState extends State<SearchDestinationUI> {
                 return _predictionTile(prediction);
               },
             )
-          else if (_searchController.text.isNotEmpty &&
+          else if (!hasSelectedDropoff &&
+              _searchController.text.isNotEmpty &&
               _predictions.isEmpty &&
               !_isLoading)
             Padding(
@@ -519,24 +708,116 @@ class _SearchDestinationUIState extends State<SearchDestinationUI> {
                 ),
               ),
             )
-          else if (_showRecentLocations && _recentLocations.isNotEmpty)
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  widget.mode == 'pickup' ? "Recent Pickup Locations" : "Recent Locations",
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.grey[700],
+      else if (!hasSelectedDropoff &&
+          _showRecentLocations &&
+          widget.mode == 'pickup' &&
+          recentLocationsToShow.isNotEmpty)
+  Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(
+        "Recent Pickup Locations",
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          color: Colors.grey[700],
+        ),
+      ),
+
+      ListView.builder(
+        padding: EdgeInsets.zero,
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        itemCount:
+            recentLocationsToShow.length > 5 ? 5 : recentLocationsToShow.length,
+        itemBuilder: (context, index) {
+          final location = recentLocationsToShow[index];
+          return _recentLocationTile(location);
+        },
+      ),
+    ],
+  )
+      else if (!hasSelectedDropoff &&
+          _showRecentLocations &&
+          widget.mode == 'dropoff' &&
+          recentDrops.isNotEmpty)
+  Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(
+        "Recent Locations",
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          color: Colors.grey[700],
+        ),
+      ),
+
+      // const SizedBox(height: 10),
+
+      ListView.builder(
+        padding: EdgeInsets.zero,
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        itemCount:
+            recentDrops.length > 5 ? 5 : recentDrops.length,
+        itemBuilder: (context, index) {
+          final drop = recentDrops[index];
+
+          return InkWell(
+            onTap: () {
+              final location = {
+                "description": drop.drop.address,
+                "formatted_address": drop.drop.address,
+                "latitude": drop.drop.lat,
+                "longitude": drop.drop.lng,
+                "place_id": drop.id,
+              };
+
+              _selectRecentLocation(location);
+            },
+            borderRadius: BorderRadius.circular(12),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                vertical: 6,
+                horizontal: 4,
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color.fromARGB(255, 80, 79, 77).withOpacity(0.1),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.location_on,
+                      color: Colors.black,
+                      size: 18,
+                    ),
                   ),
-                ),
-                SizedBox(height: 10),
-                ..._recentLocations.map(
-                  (location) => _recentLocationTile(location),
-                ),
-              ],
+
+                  const SizedBox(width: 10),
+
+                  Expanded(
+                    child: Text(
+                      drop.drop.address,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
+          );
+        },
+      ),
+    ],
+  ),
       
           SizedBox(height: 20),
       
@@ -572,30 +853,20 @@ class _SearchDestinationUIState extends State<SearchDestinationUI> {
               ),
               child: Text(
                 "Next",
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600,color: Colors.white),
               ),
             ),
       
-          /// USE CURRENT LOCATION BUTTON (only for pickup mode)
-          if (widget.mode == 'pickup' && widget.currentLocation != null && _selectedLocationData == null)
+          /// USE CURRENT LOCATION BUTTON
+          if (widget.currentLocation != null && _selectedLocationData == null)
             Padding(
               padding: const EdgeInsets.only(top: 10),
               child: ElevatedButton.icon(
-                onPressed: () {
-                  // Use current location as pickup
-                  final currentLocData = {
-                    'description': "Current Location",
-                    'address': widget.currentLocation!.address,
-                    'latitude': widget.currentLocation!.latitude,
-                    'longitude': widget.currentLocation!.longitude,
-                    'place_id': 'current_location',
-                  };
+                onPressed: _isFetchingCurrentLocation ? null : () {
                   
-                  // Print for debugging
                   print('📍 Using Current Location');
-                  print('Data: $currentLocData');
                   
-                  Navigator.pop(context, currentLocData);
+                  _useCurrentLocation();
                 },
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.green,
@@ -605,7 +876,11 @@ class _SearchDestinationUIState extends State<SearchDestinationUI> {
                   ),
                 ),
                 icon: Icon(Icons.my_location, size: 20),
-                label: Text("Use Current Location"),
+                label: Text(
+                  widget.mode == 'pickup'
+                      ? "Use Current Location"
+                      : "Set Drop To Current Location",
+                ),
               ),
             ),
         ],

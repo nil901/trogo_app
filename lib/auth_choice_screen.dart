@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:trogo_app/Phone%20Number%20Screen.dart';
+import 'package:trogo_app/localization/app_strings.dart';
 
 
 class AuthChoiceScreen extends StatelessWidget {
@@ -16,15 +17,15 @@ class AuthChoiceScreen extends StatelessWidget {
             children: [
               const Spacer(),
 
-              const Text(
-                "Welcome",
+              Text(
+                AppStrings.t('welcome'),
                 style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
               ),
 
               const SizedBox(height: 8),
 
-              const Text(
-                "Login or Signup to continue",
+              Text(
+                AppStrings.t('loginOrSignupToContinue'),
                 style: TextStyle(color: Colors.grey),
               ),
 
@@ -49,8 +50,8 @@ class AuthChoiceScreen extends StatelessWidget {
                       ),
                     );
                   },
-                  child: const Text(
-                    "Continue with Mobile Number",
+                  child: Text(
+                    AppStrings.t('continueWithMobileNumber'),
                     style: TextStyle(color: Colors.white, fontSize: 16),
                   ),
                 ),

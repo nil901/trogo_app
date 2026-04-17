@@ -8,6 +8,8 @@ import 'package:trogo_app/location_permission_screen.dart';
 class ChooseRideUI extends ConsumerStatefulWidget {
   final VoidCallback onBack;
   final Function(String, String,int) onSelect;
+  final VoidCallback? onEditPickup;
+  final VoidCallback? onEditDropoff;
   final SelectedLocation? pickupLocation;
   final SelectedLocation? destinationLocation;
   final bool isLoading;
@@ -18,6 +20,8 @@ class ChooseRideUI extends ConsumerStatefulWidget {
     super.key, 
     required this.onBack, 
     required this.onSelect,
+    this.onEditPickup,
+    this.onEditDropoff,
     this.pickupLocation,
     this.destinationLocation,
     this.isLoading = false,
@@ -35,29 +39,13 @@ class _ChooseRideUIState extends ConsumerState<ChooseRideUI> {
   int? price;
   bool _isLoadingFare = true;
   Timer? _loadingTimer;
+  final ScrollController _scrollController = ScrollController();
 
   @override
   void initState() {
     super.initState();
     _printLocationDetails();
     _startLoadingSimulation();
-        fareEstimateApi(
-          category: (widget.isGoodsTransport ?? false) ? "goods" : "passenger",
-                  ref: ref,
-                  vehicleTypeId:
-                      selectedVehicleId.toString(), 
-                  pickupAddress:widget.pickupLocation?.address ?? "Pickup Location",
-                  pickupCoordinates: [
-                    widget.pickupLocation!.longitude,
-                    widget.pickupLocation!.latitude,
-                  ],
-                  dropAddress: widget.destinationLocation!.address ?? "Destination",
-                  dropCoordinates: [
-                    widget.destinationLocation!.longitude,
-                    widget.destinationLocation!.latitude,
-                  ],
-                );
-   
   }
 
   void _startLoadingSimulation() {
@@ -83,20 +71,35 @@ class _ChooseRideUIState extends ConsumerState<ChooseRideUI> {
   @override
   void dispose() {
     _loadingTimer?.cancel();
+    _scrollController.dispose();
     super.dispose();
+  }
+
+  void _scrollToSelectionButton() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scrollController.hasClients) return;
+      _scrollController.animateTo(
+        _scrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeOutCubic,
+      );
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     final fareEstimates = ref.watch(fareEstimateProvider);
-    
+    final topSpacing = MediaQuery.of(context).padding.top > 24 ? 12.0 : 4.0;
+
     // Check if we should show loading
     final bool showLoading = _isLoadingFare || widget.isLoading;
 
     return SingleChildScrollView(
+      controller: _scrollController,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          SizedBox(height: topSpacing),
           /// HEADER
           Row(
             children: [
@@ -146,6 +149,56 @@ class _ChooseRideUIState extends ConsumerState<ChooseRideUI> {
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
+                      ],
+                    ),
+                    SizedBox(height: 8),
+                    Row(
+                      children: [
+                        if (widget.onEditPickup != null)
+                          TextButton.icon(
+                            onPressed: widget.onEditPickup,
+                            style: TextButton.styleFrom(
+                              padding: EdgeInsets.zero,
+                              minimumSize: Size(0, 32),
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            icon: Icon(
+                              Icons.edit_location_alt_outlined,
+                              size: 16,
+                              color: Colors.green[700],
+                            ),
+                            label: Text(
+                              "Change Pickup",
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.green[700],
+                              ),
+                            ),
+                          ),
+                        SizedBox(width: 12),
+                        if (widget.onEditDropoff != null)
+                          TextButton.icon(
+                            onPressed: widget.onEditDropoff,
+                            style: TextButton.styleFrom(
+                              padding: EdgeInsets.zero,
+                              minimumSize: Size(0, 32),
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            icon: Icon(
+                              Icons.edit_road_outlined,
+                              size: 16,
+                              color: Colors.orange[700],
+                            ),
+                            label: Text(
+                              "Change Drop",
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.orange[700],
+                              ),
+                            ),
+                          ),
                       ],
                     ),
                   ],
@@ -224,6 +277,7 @@ class _ChooseRideUIState extends ConsumerState<ChooseRideUI> {
                           selectedVehicleName = fareEstimate.name;
                           price = fareEstimate.estimatedFare;
                         });
+                        _scrollToSelectionButton();
                         print('✅ Selected Vehicle: ${fareEstimate.name}');
                         print('   Fare: ₹${fareEstimate.estimatedFare}');
                       },
@@ -564,13 +618,13 @@ class _ChooseRideUIState extends ConsumerState<ChooseRideUI> {
                       selectedVehicleId.toString(), 
                   pickupAddress:widget.pickupLocation?.address ?? "Pickup Location",
                   pickupCoordinates: [
-                    widget.pickupLocation!.latitude,
                     widget.pickupLocation!.longitude,
+                    widget.pickupLocation!.latitude,
                   ],
                   dropAddress: widget.destinationLocation!.address ?? "Destination",
                   dropCoordinates: [
-                    widget.destinationLocation!.latitude,
                     widget.destinationLocation!.longitude,
+                    widget.destinationLocation!.latitude,
                   ],
                 );
                 _startLoadingSimulation();

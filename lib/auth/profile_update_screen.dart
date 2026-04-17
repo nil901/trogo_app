@@ -2,65 +2,40 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:path/path.dart' as p;
 import 'package:trogo_app/api_service/urls.dart';
 import 'package:trogo_app/prefs/PreferencesKey.dart';
+import 'package:trogo_app/models/user_profile.dart';
 import 'package:trogo_app/prefs/app_preference.dart';
 
-// models/user_profile.dart
-class UserProfile {
-  final String id;
-  final String name;
-  final String email;
-  final String mobile;
-  final String gender;
-  final String? profileImage;
-  final Location? location;
-  final DateTime createdAt;
-
-  UserProfile({
-    required this.id,
-    required this.name,
-    required this.email,
-    required this.mobile,
-    required this.gender,
-    this.profileImage,
-    this.location,
-    required this.createdAt,
-  });
-
-  factory UserProfile.fromJson(Map<String, dynamic> json) {
-    return UserProfile(
-      id: json['_id'] ?? '',
-      name: json['name'] ?? '',
-      email: json['email'] ?? '',
-      mobile: json['mobile'] ?? '',
-      gender: json['gender'] ?? '',
-      profileImage: json['profileImage'],
-      location:
-          json['location'] != null ? Location.fromJson(json['location']) : null,
-      createdAt: DateTime.parse(
-        json['createdAt'] ?? DateTime.now().toIso8601String(),
-      ),
-    );
-  }
-}
-
-class Location {
-  final String type;
-  final List<double> coordinates;
-
-  Location({required this.type, required this.coordinates});
-
-  factory Location.fromJson(Map<String, dynamic> json) {
-    return Location(
-      type: json['type'] ?? 'Point',
-      coordinates: List<double>.from(json['coordinates'] ?? []),
-    );
-  }
-}
+// Model moved to lib/models/user_profile.dart - remove local copy
 
 class ProfileService {
+  Future<void> persistProfile(UserProfile profile) async {
+    await AppPreference().setString(
+      PreferencesKey.userName,
+      profile.name,
+    );
+    await AppPreference().setString(
+      PreferencesKey.userEmail,
+      profile.email,
+    );
+    await AppPreference().setString(
+      PreferencesKey.userMobile,
+      profile.mobile,
+    );
+    await AppPreference().setString(
+      PreferencesKey.userGender,
+      profile.gender,
+    );
+    await AppPreference().setString(
+      PreferencesKey.userProfileImage,
+      profile.profileImage ?? '',
+    );
+  }
+
   Future<UserProfile> fetchProfile() async {
     try {
       final token = AppPreference().getString(PreferencesKey.authToken);
@@ -85,7 +60,9 @@ class ProfileService {
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        return UserProfile.fromJson(data['record']);
+        final profile = UserProfile.fromJson(data['record']);
+        await persistProfile(profile);
+        return profile;
       } else {
         throw Exception(
           'Failed to load profile: ${response.statusCode} ${response.body}',
@@ -113,29 +90,15 @@ class ProfileService {
       }
 
       print("🔄 Starting profile update...");
-
-      // If profile image is selected, use multipart request
-      if (profileImage != null) {
-        return await updateProfileMultipart(
-          token: token,
-          name: name,
-          email: email,
-          password: password,
-          mobile: mobile,
-          gender: gender,
-          profileImage: profileImage,
-        );
-      } else {
-        // Use regular JSON request for text-only updates
-        return await updateProfileJson(
-          token: token,
-          name: name,
-          email: email,
-          password: password,
-          mobile: mobile,
-          gender: gender,
-        );
-      }
+      return await updateProfileMultipart(
+        token: token,
+        name: name,
+        email: email,
+        password: password,
+        mobile: mobile,
+        gender: gender,
+        profileImage: profileImage,
+      );
     } catch (e) {
       print("❌ Update error: $e");
       rethrow;
@@ -149,28 +112,39 @@ class ProfileService {
     required String password,
     required String mobile,
     required String gender,
-    required File profileImage,
+    File? profileImage,
   }) async {
     try {
-      final request = http.MultipartRequest(
-        'PUT',
-        Uri.parse('$baseUrl/api/auth/profile'),
-      );
+      final request = http.MultipartRequest('PUT', Uri.parse(profileUpdate));
 
       request.headers['Authorization'] = 'Bearer $token';
 
-      // Text fields
       request.fields['name'] = name;
       request.fields['email'] = email;
-      request.fields['password'] = password;
       request.fields['mobile'] = mobile;
       request.fields['type'] = 'user';
-      request.fields['gender'] = gender;
+      request.fields['gender'] = gender.toLowerCase();
 
-      // Add image file
-      request.files.add(
-        await http.MultipartFile.fromPath('profileImage', profileImage.path),
-      );
+      if (password.trim().isNotEmpty) {
+        request.fields['password'] = password;
+      }
+
+      if (profileImage != null) {
+        if (!_isSupportedProfileFile(profileImage.path)) {
+          throw Exception(
+            'Invalid file type. Only JPG, JPEG, PNG allowed.',
+          );
+        }
+        final mediaType = _profileFileMediaType(profileImage.path);
+        request.files.add(
+          await http.MultipartFile.fromPath(
+            'profileImage',
+            profileImage.path,
+            filename: p.basename(profileImage.path),
+            contentType: mediaType,
+          ),
+        );
+      }
 
       final response = await request.send();
       final responseBody = await response.stream.bytesToString();
@@ -180,66 +154,112 @@ class ProfileService {
 
       if (response.statusCode == 200) {
         final data = jsonDecode(responseBody);
-        return UserProfile.fromJson(data['record']);
+        final profile = UserProfile.fromJson(data['record']);
+        await persistProfile(profile);
+        return profile;
       } else {
-        throw Exception("Profile update failed: ${response.statusCode}");
+        throw Exception(_extractApiErrorMessage(responseBody));
       }
     } catch (e) {
-      throw Exception("Multipart update error: $e");
-    }
-  }
-
-  Future<UserProfile> updateProfileJson({
-    required String token,
-    required String name,
-    required String email,
-    required String password,
-    required String mobile,
-    required String gender,
-  }) async {
-    try {
-      final url = Uri.parse('$baseUrl/api/auth/profile');
-
-      print("🔄 JSON Update URL: $url");
-      print(
-        "🔄 Update Data: name=$name, email=$email, mobile=$mobile, gender=$gender",
-      );
-
-      final response = await http.put(
-        url,
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({
-          'name': name,
-          'email': email,
-          'password': password,
-          'mobile': mobile,
-          'type': 'user',
-          'gender': gender,
-        }),
-      );
-
-      print("📥 JSON STATUS => ${response.statusCode}");
-      print("📥 JSON BODY => ${response.body}");
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        return UserProfile.fromJson(data['record']);
-      } else {
-        throw Exception(
-          "JSON update failed: ${response.statusCode} - ${response.body}",
-        );
-      }
-    } catch (e) {
-      throw Exception("JSON update error: $e");
+      throw Exception(_extractReadableError(e));
     }
   }
 }
 
+String _extractApiErrorMessage(String responseBody) {
+  try {
+    final decoded = jsonDecode(responseBody);
+    if (decoded is Map<String, dynamic>) {
+      final message = decoded['message']?.toString().trim();
+      if (message != null && message.isNotEmpty) {
+        return message;
+      }
+    }
+  } catch (_) {}
+
+  return 'Failed to update profile. Please try again.';
+}
+
+String _extractReadableError(Object error) {
+  var message = error.toString();
+  if (message.startsWith('Exception: ')) {
+    message = message.substring('Exception: '.length);
+  }
+
+  const multipartPrefix = 'Multipart update error: ';
+  if (message.startsWith(multipartPrefix)) {
+    message = message.substring(multipartPrefix.length);
+  }
+
+  const profilePrefix = 'Profile update failed: ';
+  if (message.startsWith(profilePrefix)) {
+    message = message.substring(profilePrefix.length);
+  }
+
+  final separatorIndex = message.indexOf(' - {');
+  if (separatorIndex != -1) {
+    final jsonPart = message.substring(separatorIndex + 3);
+    return _extractApiErrorMessage(jsonPart);
+  }
+
+  return message;
+}
+
+String _normalizeGenderValue(String? gender) {
+  final value = gender?.trim().toLowerCase();
+  switch (value) {
+    case 'male':
+      return 'male';
+    case 'female':
+      return 'female';
+    case 'other':
+      return 'other';
+    default:
+      return 'male';
+  }
+}
+
+String _genderLabel(String? gender) {
+  switch (_normalizeGenderValue(gender)) {
+    case 'male':
+      return 'Male';
+    case 'female':
+      return 'Female';
+    case 'other':
+      return 'Other';
+    default:
+      return 'Male';
+  }
+}
+
+bool _isSupportedProfileFile(String filePath) {
+  final ext = p.extension(filePath).toLowerCase();
+  return ext == '.jpg' || ext == '.jpeg' || ext == '.png' || ext == '.pdf';
+}
+
+MediaType? _profileFileMediaType(String filePath) {
+  switch (p.extension(filePath).toLowerCase()) {
+    case '.jpg':
+    case '.jpeg':
+      return MediaType('image', 'jpeg');
+    case '.png':
+      return MediaType('image', 'png');
+    case '.pdf':
+      return MediaType('application', 'pdf');
+    default:
+      return null;
+  }
+}
+
 class ProfileScreen extends StatefulWidget {
-  const ProfileScreen({Key? key}) : super(key: key);
+  const ProfileScreen({
+    Key? key,
+    this.navigateToHomeOnComplete = false,
+    this.completionPageBuilder,
+  }) : super(key: key);
+
+  final bool navigateToHomeOnComplete;
+  final WidgetBuilder? completionPageBuilder;
 
   @override
   _ProfileScreenState createState() => _ProfileScreenState();
@@ -251,14 +271,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
   File? _selectedImage;
   final ImagePicker _picker = ImagePicker();
   bool _isUpdating = false;
+  bool _didAutoOpenEdit = false;
 
   // Form controllers for edit screen
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   final TextEditingController _mobileController = TextEditingController();
-  String _selectedGender = 'Male';
-  final List<String> _genders = ['Male', 'Female', 'Other'];
+  String _selectedGender = 'male';
+  final List<String> _genders = ['male', 'female', 'other'];
 
   @override
   void initState() {
@@ -393,12 +414,36 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Widget _buildInfoCard(String title, String value, IconData icon) {
     return Card(
-      margin: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      margin: const EdgeInsets.symmetric(vertical: 8),
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
       child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
         leading: Icon(icon, color: Colors.black),
-        title: Text(title, style: TextStyle(fontSize: 12, color: Colors.grey)),
-        subtitle: Text(value, style: TextStyle(fontSize: 16)),
+        title: Text(
+          title,
+          style: const TextStyle(fontSize: 12, color: Colors.grey),
+        ),
+        subtitle: Text(
+          value,
+          style: const TextStyle(fontSize: 16),
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+        ),
       ),
+    );
+  }
+
+  Future<void> _navigateToHomeAfterCompletion() async {
+    if (!widget.navigateToHomeOnComplete ||
+        widget.completionPageBuilder == null ||
+        !mounted) {
+      return;
+    }
+
+    await Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: widget.completionPageBuilder!),
+      (route) => false,
     );
   }
 
@@ -407,7 +452,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _nameController.text = profile.name;
     _emailController.text = profile.email;
     _mobileController.text = profile.mobile;
-    _selectedGender = profile.gender;
+    _selectedGender = _normalizeGenderValue(profile.gender);
     _passwordController.text = ''; // Leave password empty
 
     // Navigate to edit screen
@@ -447,6 +492,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
           backgroundColor: Colors.green,
         ),
       );
+
+      await _navigateToHomeAfterCompletion();
     }
   }
 
@@ -471,12 +518,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
       final updatedProfile = await _profileService.updateProfile(
         name: _nameController.text,
         email: _emailController.text,
-        password:
-            _passwordController.text.isNotEmpty
-                ? _passwordController.text
-                : 'current_password', // Use current password if not changed
+        password: _passwordController.text.trim(),
         mobile: _mobileController.text,
-        gender: _selectedGender,
+        gender: _normalizeGenderValue(_selectedGender),
         profileImage: _selectedImage,
       );
 
@@ -493,7 +537,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Update failed: $e'),
+          content: Text(_extractReadableError(e)),
           backgroundColor: Colors.red,
         ),
       );
@@ -549,56 +593,112 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
           if (snapshot.hasData) {
             final profile = snapshot.data!;
+            final shouldOpenEdit =
+                !_didAutoOpenEdit &&
+                (profile.name.trim().isEmpty || profile.email.trim().isEmpty);
+            final size = MediaQuery.of(context).size;
+            final shortestSide = size.shortestSide;
+            final horizontalPadding =
+                shortestSide < 360 ? 12.0 : shortestSide < 600 ? 16.0 : 24.0;
+            final avatarSize =
+                shortestSide < 360 ? 104.0 : shortestSide < 600 ? 120.0 : 136.0;
+            final titleFontSize =
+                shortestSide < 360 ? 22.0 : shortestSide < 600 ? 24.0 : 28.0;
+            final subtitleFontSize =
+                shortestSide < 360 ? 14.0 : shortestSide < 600 ? 16.0 : 17.0;
+
+            if (shouldOpenEdit) {
+              _didAutoOpenEdit = true;
+              WidgetsBinding.instance.addPostFrameCallback((_) async {
+                if (!mounted) return;
+                await _navigateToEditProfile(profile);
+              });
+            }
+
             return SingleChildScrollView(
-              child: Column(
-                children: [
-                  SizedBox(height: 30),
-                  Center(child: _buildProfileImage(profile)),
-                  SizedBox(height: 20),
-                  Text(
-                    profile.name,
-                    style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-                  ),
-                  Text(
-                    profile.email,
-                    style: TextStyle(fontSize: 16, color: Colors.grey),
-                  ),
-                  SizedBox(height: 30),
-                  _buildInfoCard('Mobile Number', profile.mobile, Icons.phone),
-                  _buildInfoCard('Gender', profile.gender, Icons.person),
-                  _buildInfoCard(
-                    'Member Since',
-                    '${profile.createdAt.day}/${profile.createdAt.month}/${profile.createdAt.year}',
-                    Icons.calendar_today,
-                  ),
-                  if (profile.location != null)
-                    _buildInfoCard(
-                      'Location',
-                      '${profile.location!.coordinates[1]}, ${profile.location!.coordinates[0]}',
-                      Icons.location_on,
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 560),
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(
+                      horizontal: horizontalPadding,
+                      vertical: 24,
                     ),
-                  SizedBox(height: 40),
-                  Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 16),
-                    child: ElevatedButton(
-                      onPressed: () async {
-                        await _navigateToEditProfile(profile);
-                      },
-                      style: ElevatedButton.styleFrom(
-                        minimumSize: Size(double.infinity, 50),
-                        backgroundColor: Colors.black,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
+                    child: Column(
+                      children: [
+                        SizedBox(height: shortestSide < 360 ? 12 : 20),
+                        SizedBox(
+                          width: avatarSize,
+                          height: avatarSize,
+                          child: FittedBox(
+                            fit: BoxFit.contain,
+                            child: _buildProfileImage(profile),
+                          ),
                         ),
-                      ),
-                      child: Text(
-                        'Edit Profile',
-                        style: TextStyle(fontSize: 16, color: Colors.white),
-                      ),
+                        const SizedBox(height: 20),
+                        Text(
+                          profile.name,
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: titleFontSize,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          profile.email,
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: subtitleFontSize,
+                            color: Colors.grey,
+                          ),
+                        ),
+                        const SizedBox(height: 24),
+                        _buildInfoCard('Mobile Number', profile.mobile, Icons.phone),
+                        _buildInfoCard(
+                          'Gender',
+                          _genderLabel(profile.gender),
+                          Icons.person,
+                        ),
+                        _buildInfoCard(
+                          'Member Since',
+                          '${profile.createdAt.day}/${profile.createdAt.month}/${profile.createdAt.year}',
+                          Icons.calendar_today,
+                        ),
+                        if (profile.location != null)
+                          _buildInfoCard(
+                            'Location',
+                            '${profile.location!.coordinates[1]}, ${profile.location!.coordinates[0]}',
+                            Icons.location_on,
+                          ),
+                        const SizedBox(height: 28),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton(
+                            onPressed: () async {
+                              await _navigateToEditProfile(profile);
+                            },
+                            style: ElevatedButton.styleFrom(
+                              minimumSize: const Size(double.infinity, 52),
+                              backgroundColor: Colors.black,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                            child: const Text(
+                              'Edit Profile',
+                              style: TextStyle(
+                                fontSize: 16,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                      ],
                     ),
                   ),
-                  SizedBox(height: 20),
-                ],
+                ),
               ),
             );
           }
@@ -641,6 +741,7 @@ class EditProfileScreen extends StatefulWidget {
 
 class _EditProfileScreenState extends State<EditProfileScreen> {
   final ImagePicker _picker = ImagePicker();
+  final ProfileService _profileService = ProfileService();
   File? _tempSelectedImage;
   String? _tempSelectedGender;
   bool _isUpdating = false;
@@ -649,7 +750,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   void initState() {
     super.initState();
     _tempSelectedImage = widget.selectedImage;
-    _tempSelectedGender = widget.selectedGender;
+    _tempSelectedGender = _normalizeGenderValue(widget.selectedGender);
   }
 
   Future<void> _pickImage() async {
@@ -759,6 +860,66 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     );
   }
 
+  Future<void> _saveProfile() async {
+    if (_isUpdating) return;
+    if (widget.nameController.text.trim().isEmpty ||
+        widget.emailController.text.trim().isEmpty ||
+        widget.mobileController.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please fill all required fields'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    setState(() {
+      _isUpdating = true;
+    });
+
+    try {
+      if (_tempSelectedImage != null &&
+          !_isSupportedProfileFile(_tempSelectedImage!.path)) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Only JPG, JPEG, or PNG image is allowed'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return;
+      }
+
+      final updatedProfile = await _profileService.updateProfile(
+        name: widget.nameController.text.trim(),
+        email: widget.emailController.text.trim(),
+        password: widget.passwordController.text.trim(),
+        mobile: widget.mobileController.text.trim(),
+        gender: _normalizeGenderValue(_tempSelectedGender ?? widget.selectedGender),
+        profileImage: _tempSelectedImage,
+      );
+
+      widget.onImageSelected(_tempSelectedImage);
+
+      if (!mounted) return;
+      Navigator.pop(context, updatedProfile);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_extractReadableError(e)),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isUpdating = false;
+        });
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -767,74 +928,59 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
         elevation: 4,
-        actions: [
-          IconButton(
-            icon: Icon(Icons.save),
-            onPressed: () async {
-              // Pass the selected image back
-              widget.onImageSelected(_tempSelectedImage);
-
-              // Update the parent widget's gender selection
-              widget.nameController.text = widget.nameController.text;
-              widget.emailController.text = widget.emailController.text;
-              widget.mobileController.text = widget.mobileController.text;
-
-              // Trigger update in parent widget
-              final _ProfileScreenState parentState =
-                  context.findAncestorStateOfType<_ProfileScreenState>()!;
-              await parentState._updateProfile();
-            },
-          ),
-        ],
+        actions: [IconButton(icon: Icon(Icons.save), onPressed: _saveProfile)],
       ),
       body: SingleChildScrollView(
-        padding: EdgeInsets.all(16),
-        child: Column(
-          children: [
-            SizedBox(height: 20),
-            Center(child: _buildProfileImage()),
-            SizedBox(height: 20),
-            Text(
-              'Update your profile picture by tapping on it',
-              style: TextStyle(color: Colors.grey, fontSize: 12),
+        padding: EdgeInsets.only(
+          left: 16,
+          right: 16,
+          top: 16,
+          bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+        ),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 560),
+            child: Column(
+              children: [
+                const SizedBox(height: 20),
+                Center(child: _buildProfileImage()),
+                const SizedBox(height: 20),
+                const Text(
+                  'Update your profile picture by tapping on it',
+                  style: TextStyle(color: Colors.grey, fontSize: 12),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 30),
+                _buildTextField(
+                  controller: widget.nameController,
+                  label: 'Full Name',
+                  icon: Icons.person,
+                  isRequired: true,
+                ),
+                const SizedBox(height: 16),
+                _buildTextField(
+                  controller: widget.emailController,
+                  label: 'Email Address',
+                  icon: Icons.email,
+                  isRequired: true,
+                  keyboardType: TextInputType.emailAddress,
+                ),
+                const SizedBox(height: 16),
+                _buildTextField(
+                  controller: widget.mobileController,
+                  label: 'Mobile Number',
+                  icon: Icons.phone,
+                  isRequired: false,
+                  keyboardType: TextInputType.phone,
+                ),
+                const SizedBox(height: 16),
+                _buildGenderDropdown(),
+                const SizedBox(height: 30),
+                _buildUpdateButton(),
+                const SizedBox(height: 20),
+              ],
             ),
-            SizedBox(height: 30),
-            _buildTextField(
-              controller: widget.nameController,
-              label: 'Full Name',
-              icon: Icons.person,
-              isRequired: true,
-            ),
-            SizedBox(height: 16),
-            _buildTextField(
-              controller: widget.emailController,
-              label: 'Email Address',
-              icon: Icons.email,
-              isRequired: true,
-              keyboardType: TextInputType.emailAddress,
-            ),
-            SizedBox(height: 16),
-            _buildTextField(
-              controller: widget.mobileController,
-              label: 'Mobile Number',
-              icon: Icons.phone,
-              isRequired: false,
-
-              keyboardType: TextInputType.phone,
-            ), 
-            SizedBox(height: 16),
-            // _buildTextField(
-            //   controller: widget.passwordController,
-            //   label: 'Password (leave empty to keep current)',
-            //   icon: Icons.lock,
-            //   isObscure: true,
-            // ),
-            SizedBox(height: 16),
-            // _buildGenderDropdown(),
-            SizedBox(height: 30),
-            // _buildUpdateButton(),
-            SizedBox(height: 20),
-          ],
+          ),
         ),
       ),
     );
@@ -876,16 +1022,26 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
   Widget _buildGenderDropdown() {
     return DropdownButtonFormField<String>(
-      value: _tempSelectedGender,
+      isExpanded: true,
+      value: _normalizeGenderValue(_tempSelectedGender),
       decoration: InputDecoration(
         labelText: 'Gender *',
         prefixIcon: Icon(Icons.person_outline, color: Colors.black),
         border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
         contentPadding: EdgeInsets.symmetric(vertical: 15, horizontal: 20),
       ),
+      borderRadius: BorderRadius.circular(14),
+      dropdownColor: Colors.white,
+      icon: Icon(Icons.keyboard_arrow_down_rounded, color: Colors.black87),
       items:
           widget.genders.map((String gender) {
-            return DropdownMenuItem<String>(value: gender, child: Text(gender));
+            return DropdownMenuItem<String>(
+              value: _normalizeGenderValue(gender),
+              child: Text(
+                _genderLabel(gender),
+                overflow: TextOverflow.ellipsis,
+              ),
+            );
           }).toList(),
       onChanged: (String? newValue) {
         setState(() {
@@ -906,25 +1062,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       width: double.infinity,
       height: 50,
       child: ElevatedButton(
-        onPressed:
-            _isUpdating
-                ? null
-                : () async {
-                  // Pass the selected image back
-                  widget.onImageSelected(_tempSelectedImage);
-
-                  // Update the parent widget's gender selection
-                  widget.nameController.text = widget.nameController.text;
-                  widget.emailController.text = widget.emailController.text;
-                  widget.mobileController.text = widget.mobileController.text;
-
-                  // Trigger update in parent widget
-                  final _ProfileScreenState? parentState =
-                      context.findAncestorStateOfType<_ProfileScreenState>();
-                  if (parentState != null) {
-                    await parentState._updateProfile();
-                  }
-                },
+        onPressed: _isUpdating ? null : _saveProfile,
         style: ElevatedButton.styleFrom(
           backgroundColor: Colors.black,
           shape: RoundedRectangleBorder(

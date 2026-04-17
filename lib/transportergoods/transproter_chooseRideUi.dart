@@ -7,20 +7,21 @@ import 'package:trogo_app/location_permission_screen.dart';
 
 class ChooseRideUI extends ConsumerStatefulWidget {
   final VoidCallback onBack;
-  final Function(String, String,int) onSelect;
+  final Function(String, String, int) onSelect;
   final SelectedLocation? pickupLocation;
   final SelectedLocation? destinationLocation;
   final bool isLoading;
+  final bool isGoodsTransport;
 
 
   const ChooseRideUI({
-    super.key, 
-    required this.onBack, 
+    super.key,
+    required this.onBack,
     required this.onSelect,
     this.pickupLocation,
     this.destinationLocation,
     this.isLoading = false,
-   
+    this.isGoodsTransport = true,
   });
 
   @override
@@ -33,34 +34,43 @@ class _ChooseRideUIState extends ConsumerState<ChooseRideUI> {
   int? price;
   bool _isLoadingFare = true;
   Timer? _loadingTimer;
+  final ScrollController _scrollController = ScrollController();
 
   @override
   void initState() {
     super.initState();
     _printLocationDetails();
     _startLoadingSimulation();
-        fareEstimateApi(
-          category: "passenger",
-                  ref: ref,
-                  vehicleTypeId:
-                      selectedVehicleId.toString(), 
-                  pickupAddress:widget.pickupLocation?.address ?? "Pickup Location",
-                  pickupCoordinates: [
-                    widget.pickupLocation!.latitude,
-                    widget.pickupLocation!.longitude,
-                  ],
-                  dropAddress: widget.destinationLocation!.address ?? "Destination",
-                  dropCoordinates: [
-                    widget.destinationLocation!.latitude,
-                    widget.destinationLocation!.longitude,
-                  ],
-                );
-   
+    _fetchFareEstimates();
+  }
+
+  void _fetchFareEstimates() {
+    final pickup = widget.pickupLocation;
+    final drop = widget.destinationLocation;
+
+    if (pickup == null || drop == null) {
+      if (mounted) {
+        setState(() {
+          _isLoadingFare = false;
+        });
+      }
+      return;
+    }
+
+    fareEstimateApi(
+      category: widget.isGoodsTransport ? "goods" : "passenger",
+      ref: ref,
+      vehicleTypeId: selectedVehicleId ?? '',
+      pickupAddress: pickup.address.toString(),
+      pickupCoordinates: [pickup.longitude, pickup.latitude],
+      dropAddress: drop.address.toString(),
+      dropCoordinates: [drop.longitude, drop.latitude],
+    );
   }
 
   void _startLoadingSimulation() {
     // 2 seconds नंतर loading stop करा
-    _loadingTimer = Timer(Duration(seconds: 2), () {
+    _loadingTimer = Timer(const Duration(seconds: 2), () {
       if (mounted) {
         setState(() {
 
@@ -81,20 +91,35 @@ class _ChooseRideUIState extends ConsumerState<ChooseRideUI> {
   @override
   void dispose() {
     _loadingTimer?.cancel();
+    _scrollController.dispose();
     super.dispose();
+  }
+
+  void _scrollToSelectionButton() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scrollController.hasClients) return;
+      _scrollController.animateTo(
+        _scrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeOutCubic,
+      );
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     final fareEstimates = ref.watch(fareEstimateProvider);
-    
+    final topSpacing = MediaQuery.of(context).padding.top > 24 ? 12.0 : 4.0;
+
     // Check if we should show loading
     final bool showLoading = _isLoadingFare || widget.isLoading;
 
     return SingleChildScrollView(
+      controller: _scrollController,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          SizedBox(height: topSpacing),
           /// HEADER
           Row(
             children: [
@@ -219,9 +244,9 @@ class _ChooseRideUIState extends ConsumerState<ChooseRideUI> {
                         setState(() {
                           selectedVehicleId = fareEstimate.vehicleTypeId;
                           selectedVehicleName = fareEstimate.name;
-                          selectedVehicleName = fareEstimate.name;
                           price = fareEstimate.estimatedFare;
                         });
+                        _scrollToSelectionButton();
                         print('✅ Selected Vehicle: ${fareEstimate.name}');
                         print('   Fare: ₹${fareEstimate.estimatedFare}');
                       },
@@ -379,8 +404,11 @@ class _ChooseRideUIState extends ConsumerState<ChooseRideUI> {
                 print('🎯 Final selection: $selectedVehicleName');
                 print('   ID: $selectedVehicleId');
                 
-                // Send ride request with location data
-                widget.onSelect(selectedVehicleName!, selectedVehicleId!,price!);
+                widget.onSelect(
+                  selectedVehicleName!,
+                  selectedVehicleId!,
+                  price!,
+                );
               },
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.black,
@@ -549,28 +577,10 @@ class _ChooseRideUIState extends ConsumerState<ChooseRideUI> {
             SizedBox(height: 20),
             ElevatedButton(
               onPressed: () {
-                // Retry fare calculation
                 setState(() {
                   _isLoadingFare = true;
-                  
                 });
-
-                   fareEstimateApi(
-                    category: "passenger",
-                  ref: ref,
-                  vehicleTypeId:
-                      selectedVehicleId.toString(), 
-                  pickupAddress:widget.pickupLocation?.address ?? "Pickup Location",
-                  pickupCoordinates: [
-                    widget.pickupLocation!.latitude,
-                    widget.pickupLocation!.longitude,
-                  ],
-                  dropAddress: widget.destinationLocation!.address ?? "Destination",
-                  dropCoordinates: [
-                    widget.destinationLocation!.latitude,
-                    widget.destinationLocation!.longitude,
-                  ],
-                );
+                _fetchFareEstimates();
                 _startLoadingSimulation();
               },
               style: ElevatedButton.styleFrom(

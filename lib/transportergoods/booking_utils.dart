@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
+import 'package:trogo_app/api_service/urls.dart';
 import 'package:trogo_app/prefs/PreferencesKey.dart';
 import 'package:trogo_app/prefs/app_preference.dart';
 
@@ -10,7 +11,7 @@ class BookingUtils {
   static Future<Map<String, dynamic>> getBookingStatus(String bookingId) async {
     final token = AppPreference().getString(PreferencesKey.authToken);
     final response = await http.get(
-      Uri.parse('https://trogo-app-backend.onrender.com/api/bookings/$bookingId/status'),
+      Uri.parse('$bookingsBaseUrl/$bookingId/status'),
       headers: {'Authorization': 'Bearer $token'},
     );
     
@@ -23,7 +24,7 @@ class BookingUtils {
   static Future<void> cancelBooking(String bookingId) async {
     final token = AppPreference().getString(PreferencesKey.authToken);
     await http.post(
-      Uri.parse('https://trogo-app-backend.onrender.com/api/bookings/$bookingId/cancel'),
+      Uri.parse('$bookingsBaseUrl/$bookingId/cancel'),
       headers: {'Authorization': 'Bearer $token'},
     );
   }
@@ -31,7 +32,7 @@ class BookingUtils {
   static Future<void> rateDriver(String bookingId, int rating, String? comment) async {
     final token = AppPreference().getString(PreferencesKey.authToken);
     await http.post(
-      Uri.parse('https://trogo-app-backend.onrender.com/api/bookings/$bookingId/rate'),
+      Uri.parse('$bookingsBaseUrl/$bookingId/rate'),
       headers: {
         'Authorization': 'Bearer $token',
         'Content-Type': 'application/json',

@@ -7,7 +7,9 @@ import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:flutter_polyline_points/flutter_polyline_points.dart';
 import 'package:http/http.dart' as http;
+import 'package:trogo_app/api_service/active_booking_service.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
+import 'package:trogo_app/api_service/urls.dart';
 import 'package:trogo_app/location_permission_screen.dart';
 import 'package:trogo_app/prefs/PreferencesKey.dart';
 import 'package:trogo_app/prefs/app_preference.dart';
@@ -20,12 +22,16 @@ class DriverConnectingUI extends StatefulWidget {
   final SelectedLocation? pickupLocation;
   final SelectedLocation? dropLocation;
   final VoidCallback onRideBooked;
+  final VoidCallback? onRideCompleted;
+  final VoidCallback? onRideCancelled;
   final SelectedLocation? currentLocation; // Add this
   final double? destLatitude; // Add this
   final double? destLongitude; // Add this
   final String? destinationAddress; // Add this
   final Widget? mapWidget;
-  final Function(Map<String, dynamic>, LatLng, double, String?)? onDriverUpdate;
+  final Function(Map<String, dynamic>, LatLng, double, String?, List<LatLng>?)?
+  onDriverUpdate;
+  final Map<String, dynamic>? initialBookingData;
 
   const DriverConnectingUI({
     super.key,
@@ -36,28 +42,46 @@ class DriverConnectingUI extends StatefulWidget {
     this.dropLocation,
     this.carId,
     required this.onRideBooked,
+    this.onRideCompleted,
+    this.onRideCancelled,
     this.mapWidget,
     this.onDriverUpdate,
     this.currentLocation,
     this.destLatitude,
     this.destLongitude,
     this.destinationAddress,
+    this.initialBookingData,
   });
 
   @override
   _DriverConnectingUIState createState() => _DriverConnectingUIState();
 }
 
-class _DriverConnectingUIState extends State<DriverConnectingUI> {
+class _DriverConnectingUIState extends State<DriverConnectingUI>
+    with WidgetsBindingObserver {
+  static const double _maxDriverDistanceKm = 15.0;
+  final ActiveBookingService _activeBookingService = ActiveBookingService();
+
   // Timer & State Variables
   int _connectionTime = 0;
   bool _isConnecting = false;
   bool _driverFound = false;
   bool _isRideBooked = false;
   bool _isSearchStarted = false;
+  bool _isCancellingRide = false;
+  final List<String> _cancelReasons = [
+    'Driver is late',
+    'Wrong pickup location',
+    'Change of plans',
+    'Driver unavailable',
+    'Other',
+  ];
   Timer? _timer;
   String? _bookingId;
   Timer? _driverLocationTimer;
+  Timer? _demoTimer;
+  Timer? _terminalStatusRedirectTimer;
+  LatLng? _lastDriverLatLng;
 
   // Driver Information
   final Map<String, dynamic> _driverInfo = {
@@ -75,11 +99,66 @@ class _DriverConnectingUIState extends State<DriverConnectingUI> {
     },
   };
 
+  Future<bool> _cancelRideApi(String reason) async {
+    if (_bookingId == null || _bookingId!.isEmpty) {
+      _showErrorSnackBar("Booking not found");
+      return false;
+    }
+
+    try {
+      final token = AppPreference().getString(PreferencesKey.authToken);
+      if (token.isEmpty) {
+        _showErrorSnackBar("Please login again");
+        return false;
+      }
+
+      final response = await http.post(
+        Uri.parse(bookingCancelUrl),
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer $token",
+        },
+        body: jsonEncode({"bookingId": _bookingId, "reason": reason}),
+      );
+
+      print("CANCEL RESPONSE: ${response.body}");
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        String successMessage = "Ride cancelled";
+        try {
+          final body = jsonDecode(response.body);
+          if (body is Map && body["message"] != null) {
+            successMessage = body["message"].toString();
+          }
+        } catch (_) {}
+
+        _showSnackBar(successMessage);
+        return true;
+      }
+
+      String errorMessage = "Cancel failed";
+      try {
+        final body = jsonDecode(response.body);
+        if (body is Map && body["message"] != null) {
+          errorMessage = body["message"].toString();
+        }
+      } catch (_) {}
+
+      _showErrorSnackBar(errorMessage);
+      return false;
+    } catch (e) {
+      print(e);
+      _showErrorSnackBar("Cancel error");
+      return false;
+    }
+  }
+
   // Google Maps Variables
   final Completer<GoogleMapController> _mapController = Completer();
   Set<Marker> _markers = {};
   Set<Polyline> _polylines = {};
-  static const String GOOGLE_MAPS_API_KEY = "YOUR_API_KEY";
+  static const String GOOGLE_MAPS_API_KEY =
+      "AIzaSyBGv9znbx4hAdCp_6YK0-HO2XVKI4ZXALk";
   final PolylinePoints polylinePoints = PolylinePoints(
     apiKey: GOOGLE_MAPS_API_KEY,
   );
@@ -91,20 +170,79 @@ class _DriverConnectingUIState extends State<DriverConnectingUI> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _initialize();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _handleAppResumed();
+    }
   }
 
   // ==================== INITIALIZATION ====================
   void _initialize() {
-    ;
+    _restoreExistingBookingIfAvailable();
     _initSocket();
+  }
+
+  Future<void> _handleAppResumed() async {
+    if (!mounted) return;
+
+    if (_socket?.connected != true) {
+      _socket?.connect();
+    } else {
+      _authenticateSocket();
+      _joinBookingRoom();
+      _requestDriverInfo();
+    }
+
+    if (_bookingId != null && _bookingId!.isNotEmpty) {
+      _startDriverLocationUpdates();
+      await _fetchDriverInfoFromAPI();
+      return;
+    }
+
+    await _restoreActiveBookingAfterInterruption(showRestoreMessage: false);
+  }
+
+  void _restoreExistingBookingIfAvailable() {
+    final booking = widget.initialBookingData;
+    if (booking == null) return;
+
+    _bookingId = booking['_id']?.toString();
+    if (_bookingId == null || _bookingId!.isEmpty) return;
+
+    final driverData = _extractDriverData(booking);
+    final hasDriver = driverData.isNotEmpty;
+    final bookingStatus = booking['status']?.toString().toLowerCase() ?? '';
+
+    _driverInfo['status'] =
+        bookingStatus == 'ongoing'
+            ? 'Trip in progress'
+            : 'Driver coming to pickup';
+
+    if (hasDriver) {
+      _updateDriverInfo(driverData);
+      if (driverData['location'] != null) {
+        _updateDriverLocation(driverData['location']);
+      }
+    }
+
+    _isSearchStarted = true;
+    _isConnecting = !hasDriver;
+    _driverFound = hasDriver;
+
+    _startConnectionTimer();
+    _startDriverLocationUpdates();
   }
 
   // ==================== SOCKET.IO ====================
   void _initSocket() {
     try {
       _socket = IO.io(
-        'https://trogo-app-backend.onrender.com',
+        socketBaseUrl,
         IO.OptionBuilder()
             .setTransports(['websocket', 'polling'])
             .enableAutoConnect()
@@ -114,7 +252,6 @@ class _DriverConnectingUIState extends State<DriverConnectingUI> {
             .setReconnectionAttempts(5)
             .build(),
       );
-
       _setupSocketListeners();
       _socket?.connect();
     } catch (e) {
@@ -126,6 +263,7 @@ class _DriverConnectingUIState extends State<DriverConnectingUI> {
     _socket?.onConnect((_) {
       _authenticateSocket();
       _joinBookingRoom();
+      _requestDriverInfo();
     });
 
     _socket?.on('driverAssigned', _handleDriverUpdate);
@@ -145,6 +283,13 @@ class _DriverConnectingUIState extends State<DriverConnectingUI> {
     if (_bookingId != null) {
       _socket?.emit('joinBooking', {'bookingId': _bookingId});
     }
+  }
+
+  void _requestDriverInfo() {
+    if (_bookingId == null || _bookingId!.isEmpty) return;
+
+    _socket?.emit('requestDriver', {'bookingId': _bookingId});
+    _socket?.emit('getDriverInfo', {'bookingId': _bookingId});
   }
 
   // ==================== MAP FUNCTIONS ====================
@@ -191,6 +336,7 @@ class _DriverConnectingUIState extends State<DriverConnectingUI> {
   }
 
   void _setBookingState(bool isBooking) {
+    if (!mounted) return;
     setState(() {
       _isConnecting = isBooking;
       _isSearchStarted = isBooking;
@@ -222,17 +368,21 @@ class _DriverConnectingUIState extends State<DriverConnectingUI> {
     Map<String, dynamic> bookingData,
   ) async {
     final token = AppPreference().getString(PreferencesKey.authToken);
+    final requestBody = json.encode(bookingData);
+
+    debugPrint('Booking Create URL: $bookingCreateUrl');
+    debugPrint('Booking Create Token Present: ${token.isNotEmpty}');
+    debugPrint('Booking Create Payload: $requestBody');
+    debugPrint('Booking Create token: $token');
 
     return await http
         .post(
-          Uri.parse(
-            'https://trogo-app-backend.onrender.com/api/bookings/bookings',
-          ),
+          Uri.parse(bookingCreateUrl),
           headers: {
             'Content-Type': 'application/json',
             'Authorization': 'Bearer $token',
           },
-          body: json.encode(bookingData),
+          body: requestBody,
         )
         .timeout(const Duration(seconds: 30));
   }
@@ -243,6 +393,12 @@ class _DriverConnectingUIState extends State<DriverConnectingUI> {
 
     if (response.statusCode == 200 || response.statusCode == 201) {
       final responseData = json.decode(response.body);
+      if (responseData['booking'] is Map<String, dynamic>) {
+        AppPreference().setString(
+          PreferencesKey.activeRideJson,
+          json.encode(responseData['booking']),
+        );
+      }
       _bookingId = _extractBookingId(responseData);
 
       if (_bookingId != null) {
@@ -275,8 +431,8 @@ class _DriverConnectingUIState extends State<DriverConnectingUI> {
 
     // Join socket room
     if (_socket?.connected == true) {
-      _socket?.emit('joinBooking', {'bookingId': _bookingId});
-      _socket?.emit('requestDriver', {'bookingId': _bookingId});
+      _joinBookingRoom();
+      _requestDriverInfo();
     }
 
     // Fetch driver info
@@ -285,7 +441,10 @@ class _DriverConnectingUIState extends State<DriverConnectingUI> {
   }
 
   void _handleMissingBookingId() {
-    _showErrorSnackBar('Booking successful but could not get booking ID');
+    _showBookingErrorDialog(
+      'Booking Failed',
+      'We processed your payment but could not retrieve the booking ID.\n\nPlease try again or contact support.',
+    );
     _setBookingState(false);
   }
 
@@ -294,10 +453,191 @@ class _DriverConnectingUIState extends State<DriverConnectingUI> {
     _setBookingState(false);
   }
 
+  void _showBookingErrorDialog(String title, String message) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return Dialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          elevation: 8,
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Container(
+                  width: 64,
+                  height: 64,
+                  decoration: BoxDecoration(
+                    color: Colors.red.shade100,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    Icons.error_outline,
+                    color: Colors.red.shade600,
+                    size: 32,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  message,
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Colors.grey.shade600,
+                    height: 1.5,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 24),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () {
+                          Navigator.of(context).pop();
+                          widget.onBack();
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.red,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                        ),
+                        child: const Text(
+                          'Go Back',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () {
+                          Navigator.of(context).pop();
+                        },
+                        style: OutlinedButton.styleFrom(
+                          side: BorderSide(color: Colors.grey.shade400),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                        ),
+                        child: Text(
+                          'Retry',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.grey.shade700,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   void _handleBookingError(dynamic error) {
     debugPrint('Network/API Error: $error');
-    _showErrorSnackBar('Network error: $error');
+    _recoverFromBookingFailure(error);
+  }
+
+  Future<void> _recoverFromBookingFailure(dynamic error) async {
+    final restored = await _restoreActiveBookingAfterInterruption(
+      showRestoreMessage: true,
+    );
+    if (restored) return;
+
+    final message = _friendlyBookingErrorMessage(error);
+    _showErrorSnackBar(message);
     _setBookingState(false);
+  }
+
+  String _friendlyBookingErrorMessage(dynamic error) {
+    final raw = error.toString().toLowerCase();
+    if (error is http.ClientException ||
+        raw.contains('software caused connection abort') ||
+        raw.contains('connection abort')) {
+      return 'Network interrupted. Please try again.';
+    }
+    if (raw.contains('timeout')) {
+      return 'Request timed out. Please check network and try again.';
+    }
+    return 'Network error. Please try again.';
+  }
+
+  Future<bool> _restoreActiveBookingAfterInterruption({
+    bool showRestoreMessage = false,
+  }) async {
+    final activeBooking = await _activeBookingService.fetchActiveBooking();
+    if (!mounted || activeBooking == null) return false;
+
+    final bookingId = activeBooking['_id']?.toString();
+    if (bookingId == null || bookingId.isEmpty) return false;
+
+    _bookingId = bookingId;
+    await _activeBookingService.cacheActiveBooking(activeBooking);
+
+    final driverData = _extractDriverData(activeBooking);
+    final hasDriver = driverData.isNotEmpty;
+    final bookingStatus =
+        activeBooking['status']?.toString().toLowerCase() ?? '';
+
+    if (hasDriver) {
+      _updateDriverInfo(driverData);
+      if (driverData['location'] != null) {
+        _updateDriverLocation(driverData['location']);
+      }
+    }
+
+    if (!mounted) return true;
+
+    setState(() {
+      _isSearchStarted = true;
+      _isConnecting = !hasDriver;
+      _driverFound = hasDriver;
+      _driverInfo['status'] =
+          bookingStatus == 'ongoing'
+              ? 'Trip in progress'
+              : hasDriver
+              ? 'Driver coming to pickup'
+              : 'Searching for driver';
+    });
+
+    _joinBookingRoom();
+    _startConnectionTimer();
+    _startDriverLocationUpdates();
+    await _fetchDriverInfoFromAPI();
+
+    if (showRestoreMessage && mounted) {
+      _showSuccessSnackBar('Existing booking restored');
+    }
+
+    return true;
   }
 
   // ==================== DRIVER MANAGEMENT ====================
@@ -322,9 +662,23 @@ class _DriverConnectingUIState extends State<DriverConnectingUI> {
   }
 
   Map<String, dynamic> _extractDriverData(Map data) {
-    if (data['driver'] != null) return data['driver'];
+    if (data['driver'] is Map) return Map<String, dynamic>.from(data['driver']);
+    if (data['transporter'] is Map) {
+      return Map<String, dynamic>.from(data['transporter']);
+    }
+    if (data['booking'] is Map) {
+      final nested = _extractDriverData(
+        Map<String, dynamic>.from(data['booking']),
+      );
+      if (nested.isNotEmpty) return nested;
+    }
+    if (data['data'] is Map) {
+      final nested = _extractDriverData(
+        Map<String, dynamic>.from(data['data']),
+      );
+      if (nested.isNotEmpty) return nested;
+    }
     if (data['name'] != null) return Map<String, dynamic>.from(data);
-    if (data['transporter'] != null) return data['transporter'];
     return {};
   }
 
@@ -346,54 +700,54 @@ class _DriverConnectingUIState extends State<DriverConnectingUI> {
   }
 
   void _updateDriverLocation(Map<String, dynamic> locationData) {
-    final coordinates = locationData['coordinates'];
-    if (coordinates is! List || coordinates.length < 2) return;
-
-    // 🔥 FIX: backend sends [lat, lng]
-    final lat = coordinates[0]?.toDouble();
-    final lng = coordinates[1]?.toDouble();
-
-    if (lat == null || lng == null) return;
+    final latLng = _resolveDriverLatLng(locationData['coordinates']);
+    if (latLng == null) return;
+    final lat = latLng.latitude;
+    final lng = latLng.longitude;
 
     if (widget.pickupLocation != null) {
       final distance = _calculateDistance(
         lat,
         lng,
-        widget.pickupLocation!.latitude!,
-        widget.pickupLocation!.longitude!,
+        widget.pickupLocation!.latitude,
+        widget.pickupLocation!.longitude,
       );
 
       _driverInfo['distance'] = '${distance.toStringAsFixed(1)} km away';
       _driverInfo['eta'] = '${_calculateETA(distance)} min';
     }
 
-    _notifyParentAboutDriver(lat, lng, 0.0);
+    _notifyParentAboutDriver(lat, lng);
   }
 
   String? _driverOtp = "";
 
   void _handleDriverLocationUpdate(dynamic data) {
     final latLng = _parseDriverLatLng(data);
-    print('📡 SOCKET driverLocationUpdate RECEIVED');
-    print(data);
     if (latLng == null) return;
 
     _updateDriverETA(latLng.latitude, latLng.longitude);
-    _notifyParentAboutDriver(latLng.latitude, latLng.longitude, 0.0);
+    _notifyParentAboutDriver(latLng.latitude, latLng.longitude);
   }
 
-  void _notifyParentAboutDriver(double lat, double lng, double bearing) {
-    print('📞 DEBUG: _notifyParentAboutDriver called');
-    print('   Parent callback exists: ${widget.onDriverUpdate != null}');
+  void _notifyParentAboutDriver(
+    double lat,
+    double lng, {
+    List<LatLng>? routePath,
+  }) {
+    final currentLatLng = LatLng(lat, lng);
+    final bearing = _calculateBearing(_lastDriverLatLng, currentLatLng);
+    _lastDriverLatLng = currentLatLng;
 
-    print('ssOTP: $_driverOtp');
+    print('📞 DEBUG: _notifyParentAboutDriver called');
 
     if (widget.onDriverUpdate != null) {
       widget.onDriverUpdate!(
         _driverInfo,
-        LatLng(lat, lng),
+        currentLatLng,
         bearing,
         _driverOtp,
+        routePath,
       );
     } else {
       print('❌ onDriverUpdate is NULL!');
@@ -406,29 +760,71 @@ class _DriverConnectingUIState extends State<DriverConnectingUI> {
     final distance = _calculateDistance(
       lat,
       lng,
-      widget.pickupLocation!.latitude!,
-      widget.pickupLocation!.longitude!,
+      widget.pickupLocation!.latitude,
+      widget.pickupLocation!.longitude,
     );
 
     setState(() {
-      _driverInfo['distance'] = '${distance.toStringAsFixed(1)} km away';
-      _driverInfo['eta'] = '${_calculateETA(distance)} min';
+      if (distance <= 0.08) {
+        _driverInfo['distance'] = 'Driver arrived';
+        _driverInfo['eta'] = 'Now';
+        _driverInfo['status'] = 'Driver arrived at pickup';
+      } else {
+        _driverInfo['distance'] = '${distance.toStringAsFixed(1)} km away';
+        _driverInfo['eta'] = '${_calculateETA(distance)} min';
+      }
     });
   }
 
+  double _calculateBearing(LatLng? from, LatLng to) {
+    if (from == null) return 0.0;
+
+    final lat1 = from.latitude * pi / 180;
+    final lng1 = from.longitude * pi / 180;
+    final lat2 = to.latitude * pi / 180;
+    final lng2 = to.longitude * pi / 180;
+    final dLng = lng2 - lng1;
+
+    final y = sin(dLng) * cos(lat2);
+    final x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLng);
+
+    final bearing = atan2(y, x) * 180 / pi;
+    return (bearing + 360) % 360;
+  }
+
   void _handleRideStatusUpdate(dynamic data) {
-    if (data is Map &&
-        (data['status'] == 'completed' || data['status'] == 'cancelled')) {
-      _cleanupTimers();
-      setState(() {
-        _isRideCompleted = true; // ✅ PAYMENT दाखवण्यासाठी
-      });
-      widget.onRideBooked();
+    if (data is! Map) return;
+
+    final status = data['status']?.toString().toLowerCase();
+    if (status != 'completed' && status != 'cancelled') return;
+
+    if (status == 'completed') {
+      _handleCompletedRideFlow();
+      return;
     }
+
+    _handleCancelledRideFlow();
   }
 
   void _handleBookingUpdate(dynamic data) {
-    if (data is Map && data['driverId'] != null) {
+    if (data is! Map) return;
+
+    final map = Map<String, dynamic>.from(data);
+    final driverData = _extractDriverData(map);
+    final hasDriverAssignment =
+        map['driverId'] != null ||
+        map['transporterId'] != null ||
+        driverData.isNotEmpty ||
+        (map['booking'] is Map &&
+            (((map['booking'] as Map)['driverId'] != null) ||
+                ((map['booking'] as Map)['transporterId'] != null)));
+
+    if (driverData.isNotEmpty) {
+      _handleDriverUpdate(map);
+    }
+
+    if (hasDriverAssignment) {
+      _requestDriverInfo();
       _fetchDriverInfoFromAPI();
     }
   }
@@ -439,33 +835,36 @@ class _DriverConnectingUIState extends State<DriverConnectingUI> {
 
     try {
       final token = AppPreference().getString(PreferencesKey.authToken);
+      debugPrint(
+        'TRANSPORTER LOCATION CURL: curl --location --request GET "$bookingsBaseUrl/$_bookingId/transporter-location" --header "Authorization: Bearer $token" --header "Content-Type: application/json"',
+      );
 
       final response = await http
           .get(
-            Uri.parse(
-              'https://trogo-app-backend.onrender.com/api/bookings/$_bookingId/transporter-location',
-            ),
+            Uri.parse('$bookingsBaseUrl/$_bookingId/transporter-location'),
             headers: {
               'Authorization': 'Bearer $token',
               'Content-Type': 'application/json',
             },
           )
           .timeout(Duration(seconds: 10));
-      print('================ API RESPONSE START ================');
-      print('Status Code: ${response.statusCode}');
-      print('Raw Body: ${response.body}');
-      print('===================================================');
 
       final responseData = json.decode(response.body);
 
-      print('Parsed JSON:');
-      print(responseData);
-
-      print('OTP FROM API: ${responseData['startOtp']}');
-      print('Location: ${responseData['location']}');
-
       if (response.statusCode == 200) {
         final responseData = json.decode(response.body);
+        final bookingStatus =
+            responseData['status']?.toString().toLowerCase().trim() ?? '';
+
+        if (bookingStatus == 'completed') {
+          _handleCompletedRideFlow();
+          return;
+        }
+
+        if (bookingStatus == 'cancelled') {
+          _handleCancelledRideFlow();
+          return;
+        }
 
         // Handle the response based on your API structure
         if (responseData['transporterId'] != null) {
@@ -478,7 +877,8 @@ class _DriverConnectingUIState extends State<DriverConnectingUI> {
 
           final latLng = _parseDriverLatLng(responseData);
           if (latLng != null) {
-            _notifyParentAboutDriver(latLng.latitude, latLng.longitude, 0.0);
+            _updateDriverETA(latLng.latitude, latLng.longitude);
+            _notifyParentAboutDriver(latLng.latitude, latLng.longitude);
           }
 
           setState(() {
@@ -494,10 +894,15 @@ class _DriverConnectingUIState extends State<DriverConnectingUI> {
 
   // ==================== TIMERS ====================
   void _startConnectionTimer() {
+    _timer?.cancel();
     _connectionTime = 0;
     _isSearchStarted = true;
 
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
       setState(() => _connectionTime++);
 
       // Request driver location via socket
@@ -532,6 +937,17 @@ class _DriverConnectingUIState extends State<DriverConnectingUI> {
     }
 
     _driverLocationTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
+      if (_socket?.connected == true && _bookingId != null) {
+        _socket?.emit('getDriverLocation', {
+          'bookingId': _bookingId,
+          'requestId': DateTime.now().millisecondsSinceEpoch.toString(),
+        });
+        _socket?.emit('requestLocation', {
+          'bookingId': _bookingId,
+          'timestamp': DateTime.now().millisecondsSinceEpoch,
+        });
+      }
+
       if (_bookingId != null) {
         _fetchDriverInfoFromAPI();
       }
@@ -555,6 +971,17 @@ class _DriverConnectingUIState extends State<DriverConnectingUI> {
         cos(phi1) * cos(phi2) * sin(deltaLambda / 2) * sin(deltaLambda / 2);
     final c = 2 * atan2(sqrt(a), sqrt(1 - a));
     return R * c / 1000;
+  }
+
+  String? _getCurrentToDestinationDistanceLabel() {
+    if (widget.currentLocation == null || widget.dropLocation == null) return null;
+    final distance = _calculateDistance(
+      widget.currentLocation!.latitude,
+      widget.currentLocation!.longitude,
+      widget.dropLocation!.latitude,
+      widget.dropLocation!.longitude,
+    );
+    return '${distance.toStringAsFixed(1)} km from current to destination';
   }
 
   int _calculateETA(double distanceKm) {
@@ -584,26 +1011,166 @@ class _DriverConnectingUIState extends State<DriverConnectingUI> {
   }
 
   LatLng? _parseDriverLatLng(dynamic data) {
-    List? coords;
+    if (data is! Map) return null;
 
-    if (data is Map &&
-        data['location'] != null &&
-        data['location']['coordinates'] is List) {
-      coords = data['location']['coordinates'];
-    } else if (data is Map && data['coordinates'] is List) {
-      coords = data['coordinates'];
+    final directLatLng = _extractLatLngFromMap(Map<String, dynamic>.from(data));
+    if (directLatLng != null) return directLatLng;
+
+    for (final nestedKey in ['driver', 'transporter', 'data', 'booking']) {
+      final nested = data[nestedKey];
+      if (nested is Map) {
+        final nestedLatLng = _extractLatLngFromMap(
+          Map<String, dynamic>.from(nested),
+        );
+        if (nestedLatLng != null) return nestedLatLng;
+      }
     }
 
-    if (coords == null || coords.length < 2) return null;
+    return null;
+  }
 
-    // ✅ BACKEND = [lat, lng]
-    final lat = coords[0]?.toDouble();
-    final lng = coords[1]?.toDouble();
+  LatLng? _extractLatLngFromMap(Map<String, dynamic> data) {
+    final location = data['location'];
+    if (location is Map) {
+      final nestedLocation = _extractLatLngFromMap(
+        Map<String, dynamic>.from(location),
+      );
+      if (nestedLocation != null) return nestedLocation;
+    }
 
-    if (lat == null || lng == null) return null;
+    final coordinates = data['coordinates'];
+    if (coordinates is List && coordinates.length >= 2) {
+      return _resolveDriverLatLng(coordinates);
+    }
 
-    print('✅ FIXED DRIVER LOCATION: $lat, $lng');
-    return LatLng(lat, lng);
+    final lat = _toDouble(data['latitude'] ?? data['lat']);
+    final lng = _toDouble(data['longitude'] ?? data['lng'] ?? data['lon']);
+    if (lat != null && lng != null && _isValidLatLng(lat, lng)) {
+      final latLng = LatLng(lat, lng);
+      if (!_looksLikeBogusLocation(latLng) &&
+          _isReasonableDriverLocation(latLng)) {
+        return latLng;
+      }
+    }
+
+    return null;
+  }
+
+  double? _toDouble(dynamic value) {
+    if (value is num) return value.toDouble();
+    if (value is String) return double.tryParse(value);
+    return null;
+  }
+
+  LatLng? _resolveDriverLatLng(dynamic rawCoords) {
+    if (rawCoords is! List || rawCoords.length < 2) return null;
+
+    final first = (rawCoords[0] as num?)?.toDouble();
+    final second = (rawCoords[1] as num?)?.toDouble();
+    if (first == null || second == null) return null;
+
+    final latLngAsIs =
+        _isValidLatLng(first, second) ? LatLng(first, second) : null;
+    final latLngSwapped =
+        _isValidLatLng(second, first) ? LatLng(second, first) : null;
+
+    if (latLngAsIs != null &&
+        !_looksLikeBogusLocation(latLngAsIs) &&
+        latLngSwapped == null) {
+      print(
+        '✅ DRIVER LOCATION parsed as [lat, lng]: ${latLngAsIs.latitude}, ${latLngAsIs.longitude}',
+      );
+      return latLngAsIs;
+    }
+
+    if (latLngSwapped != null &&
+        !_looksLikeBogusLocation(latLngSwapped) &&
+        latLngAsIs == null) {
+      print(
+        '✅ DRIVER LOCATION parsed as [lng, lat]: ${latLngSwapped.latitude}, ${latLngSwapped.longitude}',
+      );
+      return latLngSwapped;
+    }
+
+    if (latLngAsIs != null &&
+        latLngSwapped != null &&
+        widget.pickupLocation != null) {
+      final pickup = widget.pickupLocation!;
+      final asIsDistance = _calculateDistance(
+        latLngAsIs.latitude,
+        latLngAsIs.longitude,
+        pickup.latitude,
+        pickup.longitude,
+      );
+      final swappedDistance = _calculateDistance(
+        latLngSwapped.latitude,
+        latLngSwapped.longitude,
+        pickup.latitude,
+        pickup.longitude,
+      );
+
+      final resolved =
+          asIsDistance <= swappedDistance ? latLngAsIs : latLngSwapped;
+      if (_looksLikeBogusLocation(resolved) ||
+          !_isReasonableDriverLocation(resolved)) {
+        print(
+          '❌ Ignoring bogus driver location: ${resolved.latitude}, ${resolved.longitude}',
+        );
+        return null;
+      }
+      print(
+        '✅ DRIVER LOCATION resolved by nearest pickup: ${resolved.latitude}, ${resolved.longitude}',
+      );
+      return resolved;
+    }
+
+    final fallback = latLngAsIs ?? latLngSwapped;
+    if (fallback == null ||
+        _looksLikeBogusLocation(fallback) ||
+        !_isReasonableDriverLocation(fallback)) {
+      if (fallback != null) {
+        print(
+          '❌ Ignoring fallback driver location: ${fallback.latitude}, ${fallback.longitude}',
+        );
+      }
+      return null;
+    }
+    return fallback;
+  }
+
+  bool _isValidLatLng(double lat, double lng) {
+    return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+  }
+
+  bool _looksLikeBogusLocation(LatLng location) {
+    return location.latitude.abs() < 0.0001 &&
+        location.longitude.abs() < 0.0001;
+  }
+
+  bool _isReasonableDriverLocation(LatLng location) {
+    final pickup = widget.pickupLocation;
+    if (pickup == null) return true;
+
+    final distanceFromPickup = _calculateDistance(
+      location.latitude,
+      location.longitude,
+      pickup.latitude,
+      pickup.longitude,
+    );
+
+    if (distanceFromPickup <= _maxDriverDistanceKm) return true;
+
+    final drop = widget.dropLocation;
+    if (drop == null) return false;
+
+    final distanceFromDrop = _calculateDistance(
+      location.latitude,
+      location.longitude,
+      drop.latitude,
+      drop.longitude,
+    );
+
+    return distanceFromDrop <= _maxDriverDistanceKm;
   }
 
   bool _isRideCompleted = false;
@@ -612,10 +1179,207 @@ class _DriverConnectingUIState extends State<DriverConnectingUI> {
   void _cleanupTimers() {
     _timer?.cancel();
     _driverLocationTimer?.cancel();
+    _demoTimer?.cancel();
+    _terminalStatusRedirectTimer?.cancel();
+  }
+
+  void _handleCompletedRideFlow() {
+    if (!mounted) return;
+    if (_isRideCompleted || _paymentCompleted) return;
+
+    _cleanupTimers();
+    AppPreference().setString(PreferencesKey.activeRideJson, '');
+
+    _showSuccessSnackBar('Ride completed successfully');
+    setState(() {
+      _isRideCompleted = true;
+      _paymentCompleted = true;
+    });
+
+    _terminalStatusRedirectTimer = Timer(const Duration(seconds: 5), () {
+      if (!mounted) return;
+      widget.onRideCompleted?.call();
+    });
+  }
+
+  void _handleCancelledRideFlow() {
+    _cleanupTimers();
+    AppPreference().setString(PreferencesKey.activeRideJson, '');
+
+    if (!mounted) return;
+
+    _showErrorSnackBar('Ride was cancelled');
+    widget.onRideCancelled?.call();
+  }
+
+  Future<void> _startDemoRideFlow() async {
+    if (widget.pickupLocation == null || widget.dropLocation == null) {
+      _showErrorSnackBar('Pickup and drop are required for demo mode');
+      return;
+    }
+
+    _cleanupTimers();
+    _bookingId = 'demo-booking';
+
+    setState(() {
+      _isConnecting = true;
+      _isSearchStarted = true;
+      _driverFound = false;
+      _isRideBooked = false;
+      _connectionTime = 0;
+      _driverInfo['name'] = 'Demo Driver';
+      _driverInfo['rating'] = 4.9;
+      _driverInfo['phone'] = '9999999999';
+      _driverInfo['carModel'] = 'Auto Rickshaw';
+      _driverInfo['carNumber'] = 'MH 15 DEMO';
+      _driverInfo['profileImage'] = '';
+      _driverOtp = '1234';
+    });
+
+    final pickup = LatLng(
+      widget.pickupLocation!.latitude,
+      widget.pickupLocation!.longitude,
+    );
+    final drop = LatLng(
+      widget.dropLocation!.latitude,
+      widget.dropLocation!.longitude,
+    );
+
+    final driverStart = LatLng(
+      pickup.latitude - 0.012,
+      pickup.longitude - 0.012,
+    );
+
+    _showSnackBar('Demo mode started');
+    final pickupPath = await _buildDemoRoute(driverStart, pickup);
+    final dropPath = await _buildDemoRoute(pickup, drop);
+
+    _simulateDriverPath(
+      path: pickupPath,
+      onStart: () {
+        setState(() {
+          _driverFound = true;
+          _isConnecting = false;
+        });
+      },
+      onTickLabel: 'Driver coming to pickup',
+      onCompleted: () {
+        _showSuccessSnackBar('Driver arrived at pickup');
+        _simulateDriverPath(
+          path: dropPath,
+          onStart: () {
+            _showSnackBar('Ride started');
+          },
+          onTickLabel: 'Trip in progress',
+          onCompleted: () {
+            _handleCompletedRideFlow();
+          },
+        );
+      },
+    );
+  }
+
+  Future<List<LatLng>> _buildDemoRoute(LatLng start, LatLng end) async {
+    try {
+      final result = await polylinePoints.getRouteBetweenCoordinates(
+        request: PolylineRequest(
+          origin: PointLatLng(start.latitude, start.longitude),
+          destination: PointLatLng(end.latitude, end.longitude),
+          mode: TravelMode.driving,
+        ),
+      );
+
+      if (result.points.isNotEmpty) {
+        return _densifyDemoPath(
+          result.points
+              .map((point) => LatLng(point.latitude, point.longitude))
+              .toList(),
+        );
+      }
+    } catch (_) {}
+
+    return _densifyDemoPath([start, end]);
+  }
+
+  List<LatLng> _densifyDemoPath(List<LatLng> path) {
+    if (path.length < 2) return path;
+
+    final smoothPath = <LatLng>[];
+    for (int i = 0; i < path.length - 1; i++) {
+      final current = path[i];
+      final next = path[i + 1];
+      smoothPath.add(current);
+
+      for (int j = 1; j <= 6; j++) {
+        final t = j / 7;
+        smoothPath.add(
+          LatLng(
+            current.latitude + (next.latitude - current.latitude) * t,
+            current.longitude + (next.longitude - current.longitude) * t,
+          ),
+        );
+      }
+    }
+
+    smoothPath.add(path.last);
+    return smoothPath;
+  }
+
+  void _simulateDriverPath({
+    required List<LatLng> path,
+    required VoidCallback onCompleted,
+    VoidCallback? onStart,
+    String? onTickLabel,
+  }) {
+    final demoPath = path.isEmpty ? <LatLng>[] : path;
+    if (demoPath.isEmpty) {
+      onCompleted();
+      return;
+    }
+
+    onStart?.call();
+    int step = 0;
+
+    _demoTimer?.cancel();
+    _demoTimer = Timer.periodic(const Duration(milliseconds: 1700), (timer) {
+      final currentPoint = demoPath[step];
+      final destination = demoPath.last;
+      final lat = currentPoint.latitude;
+      final lng = currentPoint.longitude;
+
+      if (widget.pickupLocation != null) {
+        final distance = _calculateDistance(
+          lat,
+          lng,
+          destination.latitude,
+          destination.longitude,
+        );
+        _driverInfo['distance'] = '${distance.toStringAsFixed(1)} km away';
+        _driverInfo['eta'] =
+            '${max(1, ((demoPath.length - step) / 2).ceil())} min';
+      }
+
+      _notifyParentAboutDriver(lat, lng, routePath: demoPath.sublist(step));
+
+      if (onTickLabel != null && mounted) {
+        setState(() {
+          _driverInfo['status'] = onTickLabel;
+        });
+      }
+
+      if (step >= demoPath.length - 1) {
+        timer.cancel();
+        onCompleted();
+        return;
+      }
+
+      step++;
+    });
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _cleanupTimers();
     _socket?.disconnect();
     _socket?.clearListeners();
@@ -628,12 +1392,17 @@ class _DriverConnectingUIState extends State<DriverConnectingUI> {
   @override
   Widget build(BuildContext context) {
     print(_bookingId);
+    final isTrackingMode = _isSearchStarted || _driverFound;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _buildHeader(),
         const SizedBox(height: 20),
+        if (isTrackingMode) ...[
+          _buildTrackingHeroCard(),
+          const SizedBox(height: 16),
+        ],
 
         // 🔥 PAYMENT COMPLETE झाल्यावर फक्त success UI
         if (_paymentCompleted) ...[
@@ -641,30 +1410,202 @@ class _DriverConnectingUIState extends State<DriverConnectingUI> {
           _buildRideCompletedUI(),
         ] else ...[
           _buildConnectionStatus(),
-          const SizedBox(height: 20),
-
+          const SizedBox(height: 16),
           _buildLocationTimeline(),
-          const SizedBox(height: 20),
-
+          const SizedBox(height: 16),
           _buildRideDetails(),
-          const SizedBox(height: 20),
-
-          // Book button
+          const SizedBox(height: 16),
           if (!_isSearchStarted && !_isRideBooked && !_driverFound) ...[
             const SizedBox(height: 20),
             _buildBookingButton(),
           ],
-
-          // Cancel button
-          if ((_isSearchStarted || _driverFound) && !_isRideBooked) ...[
-            const SizedBox(height: 10),
-            _buildCancelButton(),
-          ],
-
-          // 🔥 Payment section फक्त ride complete झाल्यावर
+          const SizedBox(height: 10),
+          _buildCancelButton(),
+          SizedBox(height: 10),
           _buildPaymentSection(),
         ],
       ],
+    );
+  }
+
+  Widget _buildTrackingHeroCard() {
+    final statusLabel =
+        _driverFound
+            ? (_driverInfo['eta']?.toString().isNotEmpty == true
+                ? _driverInfo['eta'].toString()
+                : 'Driver nearby')
+            : 'Searching';
+    final statusSubLabel =
+        _driverFound
+            ? (_driverInfo['distance']?.toString().isNotEmpty == true
+                ? _driverInfo['distance'].toString()
+                : 'Live tracking active')
+            : 'Finding nearby drivers';
+    final tripDistanceLabel = _getCurrentToDestinationDistanceLabel();
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFF0A7B61), Color(0xFF0F9D58)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x22000000),
+            blurRadius: 18,
+            offset: Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 52,
+                height: 52,
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.16),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: const Icon(
+                  Icons.navigation_rounded,
+                  color: Colors.white,
+                  size: 28,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _driverFound
+                          ? 'Driver is on the way'
+                          : 'Live ride search running',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _driverFound
+                          ? (_driverInfo['name']?.toString().isNotEmpty == true
+                              ? '${_driverInfo['name']} is moving toward pickup'
+                              : 'Tracking driver live on the map')
+                          : 'Live tracking is active on the map',
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.88),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Column(
+                  children: [
+                    Text(
+                      statusLabel,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFF0A7B61),
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      _driverFound ? 'ETA' : 'Status',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: Colors.black.withOpacity(0.6),
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Expanded(
+                child: _buildTrackingInfoChip(
+                  icon: _driverFound ? Icons.route_rounded : Icons.search,
+                  label: statusSubLabel,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _buildTrackingInfoChip(
+                  icon: Icons.pin_drop_outlined,
+                  label:
+                      widget.dropLocation?.address?.toString().isNotEmpty ==
+                              true
+                          ? widget.dropLocation!.address!
+                          : 'Destination selected',
+                ),
+              ),
+            ],
+          ),
+          if (tripDistanceLabel != null) ...[
+            const SizedBox(height: 10),
+            _buildTrackingInfoChip(
+              icon: Icons.directions,
+              label: tripDistanceLabel,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTrackingInfoChip({
+    required IconData icon,
+    required String label,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.14),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.white.withOpacity(0.15)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: Colors.white, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              label,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -738,9 +1679,7 @@ class _DriverConnectingUIState extends State<DriverConnectingUI> {
       final token = AppPreference().getString(PreferencesKey.authToken);
 
       final response = await http.post(
-        Uri.parse(
-          'https://trogo-app-backend.onrender.com/api/bookings/complete-and-rate',
-        ),
+        Uri.parse(bookingCompleteAndRateUrl),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $token',
@@ -757,18 +1696,7 @@ class _DriverConnectingUIState extends State<DriverConnectingUI> {
 
       if (response.statusCode == 200 || response.statusCode == 201) {
         _showSuccessSnackBar("Ride completed successfully (Cash)");
-        setState(() {
-          _paymentCompleted = true; // 🔥 UI hide trigger
-        });
-
-        _showSuccessSnackBar("Ride completed successfully");
-
-        // ⏳ 2 minutes delay → Home
-        Future.delayed(const Duration(minutes: 2), () {
-          widget.onRideBooked();
-        });
-        // ✅ Reset & Go Home
-        widget.onRideBooked();
+        _handleCompletedRideFlow();
       } else {
         setState(() {
           _paymentCompleted = false; // 🔥 UI hide trigger
@@ -786,37 +1714,44 @@ class _DriverConnectingUIState extends State<DriverConnectingUI> {
   }
 
   Widget _buildHeader() {
-    return Row(
-      children: [
-        GestureDetector(
-          onTap: widget.onBack,
-          child: CircleAvatar(
-            backgroundColor: Colors.grey.shade200,
-            child: const Icon(Icons.arrow_back, color: Colors.black),
+    final topSpacing = MediaQuery.of(context).padding.top > 24 ? 12.0 : 4.0;
+    return Padding(
+      padding: EdgeInsets.only(top: topSpacing),
+      child: Row(
+        children: [
+          GestureDetector(
+            onTap: widget.onBack,
+            child: CircleAvatar(
+              backgroundColor: Colors.grey.shade200,
+              child: const Icon(Icons.arrow_back, color: Colors.black),
+            ),
           ),
-        ),
-        const SizedBox(width: 12),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              _isSearchStarted
-                  ? (_driverFound ? "Driver Found!" : "Finding your driver")
-                  : "Confirm your ride",
-              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
-            ),
-            const SizedBox(height: 3),
-            Text(
-              _isSearchStarted
-                  ? (_driverFound
-                      ? "${_driverInfo['name'].isNotEmpty ? _driverInfo['name'] : 'Driver'} is on the way"
-                      : "Searching for nearby drivers...")
-                  : "Review details and book your ride",
-              style: const TextStyle(fontSize: 10, color: Colors.grey),
-            ),
-          ],
-        ),
-      ],
+          const SizedBox(width: 12),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                _isSearchStarted
+                    ? (_driverFound ? "Driver Found!" : "Finding your driver")
+                    : "Confirm your ride",
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 3),
+              Text(
+                _isSearchStarted
+                    ? (_driverFound
+                        ? "${_driverInfo['name'].isNotEmpty ? _driverInfo['name'] : 'Driver'} is on the way"
+                        : "Searching for nearby drivers...")
+                    : "Review details and book your ride",
+                style: const TextStyle(fontSize: 10, color: Colors.grey),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 
@@ -1210,11 +2145,32 @@ class _DriverConnectingUIState extends State<DriverConnectingUI> {
   }
 
   Widget _buildCancelButton() {
-    return TextButton(
-      onPressed: _cancelRide,
-      child: Text(
-        _isSearchStarted ? "Cancel Search" : "Cancel",
-        style: const TextStyle(color: Colors.red, fontSize: 12),
+    return OutlinedButton.icon(
+      onPressed: _isCancellingRide ? null : _cancelRide,
+      style: OutlinedButton.styleFrom(
+        minimumSize: const Size(double.infinity, 52),
+        side: BorderSide(color: Colors.red.shade300),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+      icon: SizedBox(
+        width: 18,
+        height: 18,
+        child:
+            _isCancellingRide
+                ? const CircularProgressIndicator(strokeWidth: 2)
+                : const Icon(
+                  Icons.cancel_outlined,
+                  color: Colors.red,
+                  size: 20,
+                ),
+      ),
+      label: Text(
+        _driverFound ? "Cancel Ride" : "Cancel Search",
+        style: const TextStyle(
+          color: Colors.red,
+          fontSize: 13,
+          fontWeight: FontWeight.w600,
+        ),
       ),
     );
   }
@@ -1393,22 +2349,279 @@ class _DriverConnectingUIState extends State<DriverConnectingUI> {
     }
   }
 
-  void _cancelRide() {
-    _cleanupTimers();
+  Future<String?> _showCancelReasonDialog() async {
+    String selectedReason = _cancelReasons.first;
+    String? customReason;
 
-    if (_socket?.connected == true && _bookingId != null) {
-      _socket?.emit('cancelRide', {'bookingId': _bookingId});
+    return showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            final isOther = selectedReason == 'Other';
+            return Dialog(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              elevation: 8,
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Container(
+                            width: 48,
+                            height: 48,
+                            decoration: BoxDecoration(
+                              color: Colors.red.shade100,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Icon(
+                              Icons.cancel_outlined,
+                              color: Colors.red.shade600,
+                              size: 24,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'Cancel Ride',
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  'Tell us why',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey.shade600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 20),
+                      Text(
+                        'Please select a reason for cancelling this ride:',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: Colors.grey.shade700,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      Container(
+                        decoration: BoxDecoration(
+                          border: Border.all(color: Colors.grey.shade300),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Column(
+                          children: [
+                            ..._cancelReasons.asMap().entries.map((entry) {
+                              int index = entry.key;
+                              String reason = entry.value;
+                              return Column(
+                                children: [
+                                  RadioListTile<String>(
+                                    value: reason,
+                                    groupValue: selectedReason,
+                                    title: Text(
+                                      reason,
+                                      style: const TextStyle(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                    activeColor: Colors.red,
+                                    onChanged: (value) {
+                                      if (value == null) return;
+                                      setState(() {
+                                        selectedReason = value;
+                                        if (selectedReason != 'Other') {
+                                          customReason = null;
+                                        }
+                                      });
+                                    },
+                                  ),
+                                  if (index < _cancelReasons.length - 1)
+                                    Divider(
+                                      height: 1,
+                                      color: Colors.grey.shade200,
+                                    ),
+                                ],
+                              );
+                            }),
+                          ],
+                        ),
+                      ),
+                      if (isOther) ...[
+                        const SizedBox(height: 16),
+                        Text(
+                          'What else?',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey.shade600,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        TextField(
+                          autofocus: true,
+                          minLines: 2,
+                          maxLines: 4,
+                          decoration: InputDecoration(
+                            hintText: 'Tell us why...',
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(10),
+                              borderSide: BorderSide(
+                                color: Colors.grey.shade300,
+                              ),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(10),
+                              borderSide: const BorderSide(
+                                color: Colors.red,
+                                width: 2,
+                              ),
+                            ),
+                            filled: true,
+                            fillColor: Colors.grey.shade50,
+                          ),
+                          onChanged: (value) {
+                            setState(() {
+                              customReason = value;
+                            });
+                          },
+                        ),
+                      ],
+                      const SizedBox(height: 24),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: () => Navigator.of(context).pop(null),
+                              style: OutlinedButton.styleFrom(
+                                side: BorderSide(color: Colors.grey.shade400),
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 12,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                              ),
+                              child: Text(
+                                'Dismiss',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.grey.shade700,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: ElevatedButton(
+                              onPressed:
+                                  (isOther &&
+                                          (customReason?.trim().isEmpty ??
+                                              true))
+                                      ? null
+                                      : () {
+                                        final reason =
+                                            selectedReason == 'Other'
+                                                ? (customReason?.trim() ?? '')
+                                                : selectedReason;
+                                        Navigator.of(context).pop(reason);
+                                      },
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.red,
+                                disabledBackgroundColor: Colors.grey.shade300,
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 12,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                              ),
+                              child: const Text(
+                                'Submit',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _cancelRide() async {
+    if (_isCancellingRide) return;
+
+    final selectedReason =
+        (_driverFound || _isRideBooked)
+            ? await _showCancelReasonDialog()
+            : 'Search cancelled by user';
+
+    if (selectedReason == null || selectedReason.isEmpty) return;
+
+    setState(() {
+      _isCancellingRide = true;
+    });
+
+    final bookingId = _bookingId;
+    final isCancelled = await _cancelRideApi(selectedReason);
+
+    if (!mounted) return;
+
+    if (isCancelled) {
+      _cleanupTimers();
+
+      if (_socket?.connected == true && bookingId != null) {
+        _socket?.emit('cancelRide', {'bookingId': bookingId});
+      }
+
+      setState(() {
+        _isSearchStarted = false;
+        _isConnecting = false;
+        _driverFound = false;
+        _isRideBooked = false;
+        _bookingId = null;
+        _isCancellingRide = false;
+      });
+
+      AppPreference().setString(PreferencesKey.activeRideJson, '');
+      widget.onBack();
+      return;
     }
 
     setState(() {
-      _isSearchStarted = false;
-      _isConnecting = false;
-      _driverFound = false;
-      _isRideBooked = false;
-      _bookingId = null;
+      _isCancellingRide = false;
     });
-
-    _showErrorSnackBar('Ride cancelled');
-    widget.onBack();
   }
 }

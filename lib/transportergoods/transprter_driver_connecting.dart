@@ -8,6 +8,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:flutter_polyline_points/flutter_polyline_points.dart';
 import 'package:http/http.dart' as http;
 import 'package:socket_io_client/socket_io_client.dart' as IO;
+import 'package:trogo_app/api_service/urls.dart';
 import 'package:trogo_app/location_permission_screen.dart';
 import 'package:trogo_app/prefs/PreferencesKey.dart';
 import 'package:trogo_app/prefs/app_preference.dart';
@@ -104,7 +105,7 @@ class _TransprterDriverConnectingUIState extends State<TransprterDriverConnectin
   void _initSocket() {
     try {
       _socket = IO.io(
-        'https://trogo-app-backend.onrender.com',
+        socketBaseUrl,
         IO.OptionBuilder()
             .setTransports(['websocket', 'polling'])
             .enableAutoConnect()
@@ -226,7 +227,7 @@ class _TransprterDriverConnectingUIState extends State<TransprterDriverConnectin
     return await http
         .post(
           Uri.parse(
-            'https://trogo-app-backend.onrender.com/api/bookings/bookings',
+            bookingCreateUrl,
           ),
           headers: {
             'Content-Type': 'application/json',
@@ -346,14 +347,10 @@ class _TransprterDriverConnectingUIState extends State<TransprterDriverConnectin
   }
 
   void _updateDriverLocation(Map<String, dynamic> locationData) {
-    final coordinates = locationData['coordinates'];
-    if (coordinates is! List || coordinates.length < 2) return;
-
-    // 🔥 FIX: backend sends [lat, lng]
-    final lat = coordinates[0]?.toDouble();
-    final lng = coordinates[1]?.toDouble();
-
-    if (lat == null || lng == null) return;
+    final latLng = _resolveDriverLatLng(locationData['coordinates']);
+    if (latLng == null) return;
+    final lat = latLng.latitude;
+    final lng = latLng.longitude;
 
     if (widget.pickupLocation != null) {
       final distance = _calculateDistance(
@@ -443,7 +440,7 @@ class _TransprterDriverConnectingUIState extends State<TransprterDriverConnectin
       final response = await http
           .get(
             Uri.parse(
-              'https://trogo-app-backend.onrender.com/api/bookings/$_bookingId/transporter-location',
+              '$bookingsBaseUrl/$_bookingId/transporter-location',
             ),
             headers: {
               'Authorization': 'Bearer $token',
@@ -595,15 +592,90 @@ class _TransprterDriverConnectingUIState extends State<TransprterDriverConnectin
     }
 
     if (coords == null || coords.length < 2) return null;
+    return _resolveDriverLatLng(coords);
+  }
 
-    // ✅ BACKEND = [lat, lng]
-    final lat = coords[0]?.toDouble();
-    final lng = coords[1]?.toDouble();
+  LatLng? _resolveDriverLatLng(dynamic rawCoords) {
+    if (rawCoords is! List || rawCoords.length < 2) return null;
 
-    if (lat == null || lng == null) return null;
+    final first = (rawCoords[0] as num?)?.toDouble();
+    final second = (rawCoords[1] as num?)?.toDouble();
+    if (first == null || second == null) return null;
 
-    print('✅ FIXED DRIVER LOCATION: $lat, $lng');
-    return LatLng(lat, lng);
+    final latLngAsIs = _isValidLatLng(first, second) ? LatLng(first, second) : null;
+    final latLngSwapped =
+        _isValidLatLng(second, first) ? LatLng(second, first) : null;
+
+    if (latLngAsIs != null && !_looksLikeBogusLocation(latLngAsIs) && latLngSwapped == null) {
+      return latLngAsIs;
+    }
+    if (latLngSwapped != null && !_looksLikeBogusLocation(latLngSwapped) && latLngAsIs == null) {
+      return latLngSwapped;
+    }
+
+    if (latLngAsIs != null && latLngSwapped != null && widget.pickupLocation != null) {
+      final pickup = widget.pickupLocation!;
+      final asIsDistance = _calculateDistance(
+        latLngAsIs.latitude,
+        latLngAsIs.longitude,
+        pickup.latitude,
+        pickup.longitude,
+      );
+      final swappedDistance = _calculateDistance(
+        latLngSwapped.latitude,
+        latLngSwapped.longitude,
+        pickup.latitude,
+        pickup.longitude,
+      );
+
+      final resolved = asIsDistance <= swappedDistance ? latLngAsIs : latLngSwapped;
+      if (_looksLikeBogusLocation(resolved) || !_isReasonableDriverLocation(resolved)) {
+        return null;
+      }
+      return resolved;
+    }
+
+    final fallback = latLngAsIs ?? latLngSwapped;
+    if (fallback == null ||
+        _looksLikeBogusLocation(fallback) ||
+        !_isReasonableDriverLocation(fallback)) {
+      return null;
+    }
+    return fallback;
+  }
+
+  bool _isValidLatLng(double lat, double lng) {
+    return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+  }
+
+  bool _looksLikeBogusLocation(LatLng location) {
+    return location.latitude.abs() < 0.0001 && location.longitude.abs() < 0.0001;
+  }
+
+  bool _isReasonableDriverLocation(LatLng location) {
+    final pickup = widget.pickupLocation;
+    if (pickup == null) return true;
+
+    final distanceFromPickup = _calculateDistance(
+      location.latitude,
+      location.longitude,
+      pickup.latitude,
+      pickup.longitude,
+    );
+
+    if (distanceFromPickup <= 300) return true;
+
+    final drop = widget.dropLocation;
+    if (drop == null) return false;
+
+    final distanceFromDrop = _calculateDistance(
+      location.latitude,
+      location.longitude,
+      drop.latitude,
+      drop.longitude,
+    );
+
+    return distanceFromDrop <= 300;
   }
 
   bool _isRideCompleted = false;
@@ -739,7 +811,7 @@ class _TransprterDriverConnectingUIState extends State<TransprterDriverConnectin
 
       final response = await http.post(
         Uri.parse(
-          'https://trogo-app-backend.onrender.com/api/bookings/complete-and-rate',
+          bookingCompleteAndRateUrl,
         ),
         headers: {
           'Content-Type': 'application/json',
@@ -786,37 +858,41 @@ class _TransprterDriverConnectingUIState extends State<TransprterDriverConnectin
   }
 
   Widget _buildHeader() {
-    return Row(
-      children: [
-        GestureDetector(
-          onTap: widget.onBack,
-          child: CircleAvatar(
-            backgroundColor: Colors.grey.shade200,
-            child: const Icon(Icons.arrow_back, color: Colors.black),
+    final topSpacing = MediaQuery.of(context).padding.top > 24 ? 12.0 : 4.0;
+    return Padding(
+      padding: EdgeInsets.only(top: topSpacing),
+      child: Row(
+        children: [
+          GestureDetector(
+            onTap: widget.onBack,
+            child: CircleAvatar(
+              backgroundColor: Colors.grey.shade200,
+              child: const Icon(Icons.arrow_back, color: Colors.black),
+            ),
           ),
-        ),
-        const SizedBox(width: 12),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              _isSearchStarted
-                  ? (_driverFound ? "Driver Found!" : "Finding your driver")
-                  : "Confirm your ride",
-              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
-            ),
-            const SizedBox(height: 3),
-            Text(
-              _isSearchStarted
-                  ? (_driverFound
-                      ? "${_driverInfo['name'].isNotEmpty ? _driverInfo['name'] : 'Driver'} is on the way"
-                      : "Searching for nearby drivers...")
-                  : "Review details and book your ride",
-              style: const TextStyle(fontSize: 10, color: Colors.grey),
-            ),
-          ],
-        ),
-      ],
+          const SizedBox(width: 12),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                _isSearchStarted
+                    ? (_driverFound ? "Driver Found!" : "Finding your driver")
+                    : "Confirm your ride",
+                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 3),
+              Text(
+                _isSearchStarted
+                    ? (_driverFound
+                        ? "${_driverInfo['name'].isNotEmpty ? _driverInfo['name'] : 'Driver'} is on the way"
+                        : "Searching for nearby drivers...")
+                    : "Review details and book your ride",
+                style: const TextStyle(fontSize: 10, color: Colors.grey),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 

@@ -335,6 +335,7 @@ import 'dart:developer';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/legacy.dart';
@@ -347,6 +348,7 @@ import 'package:trogo_app/models/bannar_model.dart';
 import 'package:trogo_app/models/estimateurl_model.dart';
 import 'package:trogo_app/models/history_model.dart';
 import 'package:trogo_app/models/notifaction_model.dart';
+import 'package:trogo_app/models/recent_drop_model.dart';
 import 'package:trogo_app/models/summary_model.dart';
 import 'package:trogo_app/models/transport_vihcle_type_model.dart';
 import 'package:trogo_app/models/vehicle_type_model.dart';
@@ -363,6 +365,77 @@ final loginProvider = StateNotifierProvider<LoginNotifier, AsyncValue<void>>((
 class LoginNotifier extends StateNotifier<AsyncValue<void>> {
   LoginNotifier() : super(const AsyncValue.data(null));
 
+  Future<void> _persistUserSession(Map<String, dynamic> responseData) async {
+    final user = responseData['user'] as Map<String, dynamic>? ?? {};
+
+    await AppPreference().setString(
+      PreferencesKey.authToken,
+      responseData['token']?.toString() ?? '',
+    );
+    await AppPreference().setString(
+      PreferencesKey.userId,
+      user['_id']?.toString() ?? '',
+    );
+    await AppPreference().setString(
+      PreferencesKey.userName,
+      user['name']?.toString() ?? '',
+    );
+    await AppPreference().setString(
+      PreferencesKey.userEmail,
+      user['email']?.toString() ?? '',
+    );
+    await AppPreference().setString(
+      PreferencesKey.userMobile,
+      user['mobile']?.toString() ?? '',
+    );
+    await AppPreference().setString(
+      PreferencesKey.userGender,
+      user['gender']?.toString() ?? '',
+    );
+    await AppPreference().setString(
+      PreferencesKey.userProfileImage,
+      user['profileImage']?.toString() ?? "",
+    );
+  }
+
+  Future<void> saveFcmToken(String firebaseToken) async {
+    if (firebaseToken.trim().isEmpty) return;
+
+    try {
+      debugPrint('FCM save endpoint: $fcmTokan');
+      debugPrint('FCM save request: {"fcmToken": "$firebaseToken"}');
+
+      final response = await ApiService().postRequest(fcmTokan, {
+        "fcmToken": firebaseToken,
+      });
+
+      debugPrint('FCM save status: ${response?.statusCode}');
+      debugPrint('FCM save response: ${response?.data}');
+
+      if (response?.statusCode == 200 || response?.statusCode == 201) {
+        debugPrint('FCM token saved successfully');
+      } else {
+        debugPrint('Failed to save FCM token: ${response?.data['message']}');
+      }
+    } catch (e) {
+      debugPrint('Error saving FCM token: $e');
+    }
+  }
+
+  Future<void> _syncCurrentFcmToken() async {
+    try {
+      final firebaseToken = await FirebaseMessaging.instance.getToken();
+      if (firebaseToken == null || firebaseToken.trim().isEmpty) {
+        debugPrint('FCM token not available yet');
+        return;
+      }
+
+      await saveFcmToken(firebaseToken);
+    } catch (e) {
+      debugPrint('Error fetching FCM token: $e');
+    }
+  }
+
   Future<void> login(String stId, String password, BuildContext context) async {
     state = const AsyncValue.loading();
     try {
@@ -371,41 +444,14 @@ class LoginNotifier extends StateNotifier<AsyncValue<void>> {
         "password": password,
         "type": "user",
       });
-
       print("statusCode: \${response?.statusCode}");
       print("status: \${response?.data['status']}");
       print("message: \${response?.data['message']}");
-
       if (response?.statusCode == 200) {
         final responseData = response!.data;
         Utils().showToastMessage('Login successful');
-
-        final user = responseData['user'];
-
-        // await AppPreference().setBool("IS_LOGGED_IN", true);
-
-        await AppPreference().setString(
-          PreferencesKey.authToken,
-          response!.data['token'],
-        );
-        await AppPreference().setString(PreferencesKey.userId, user['_id']);
-        await AppPreference().setString(PreferencesKey.userName, user['name']);
-        await AppPreference().setString(
-          PreferencesKey.userEmail,
-          user['email'],
-        );
-        await AppPreference().setString(
-          PreferencesKey.userMobile,
-          user['mobile'],
-        );
-        await AppPreference().setString(
-          PreferencesKey.userGender,
-          user['gender'],
-        );
-        await AppPreference().setString(
-          PreferencesKey.userProfileImage,
-          user['profileImage'] ?? "",
-        );
+        await _persistUserSession(Map<String, dynamic>.from(responseData));
+        await _syncCurrentFcmToken();
 
         state = const AsyncValue.data(null);
 
@@ -413,6 +459,7 @@ class LoginNotifier extends StateNotifier<AsyncValue<void>> {
           context,
           MaterialPageRoute(builder: (context) => LocationPermissionScreen()),
         );
+        // Fetch profile in LocationPermissionScreen or main nav if needed
       } else {
         state = AsyncValue.error(
           response?.data['message'] ?? 'Invalid username or password',
@@ -425,6 +472,80 @@ class LoginNotifier extends StateNotifier<AsyncValue<void>> {
         'Failed to login. Please try again.',
         stackTrace,
       );
+    }
+  }
+
+  Future<bool> requestOtp(String mobile) async {
+    state = const AsyncValue.loading();
+    try {
+      final response = await ApiService().postRequest(requestOtpEndPoint, {
+        "mobile": mobile,
+        "type": "user",
+      });
+
+      if (response?.statusCode == 200 || response?.statusCode == 201) {
+        final message =
+            response?.data['message']?.toString() ?? 'OTP sent successfully';
+        Utils().showToastMessage(message);
+        state = const AsyncValue.data(null);
+        return true;
+      }
+
+      state = AsyncValue.error(
+        response?.data['message'] ?? 'Failed to send OTP',
+        StackTrace.current,
+      );
+      return false;
+    } catch (e, stackTrace) {
+      state = AsyncValue.error(
+        'Failed to send OTP. Please try again.',
+        stackTrace,
+      );
+      return false;
+    }
+  }
+
+  Future<bool> verifyOtp({
+    required String mobile,
+    required String otp,
+    required BuildContext context,
+  }) async {
+    state = const AsyncValue.loading();
+    try {
+      final response = await ApiService().postRequest(verifyOtpEndPoint, {
+        "contact": mobile,
+        "otp": otp,
+        "type": "user",
+      });
+      print(verifyOtpEndPoint);
+      if (response?.statusCode == 200 || response?.statusCode == 201) {
+        final responseData = Map<String, dynamic>.from(response!.data);
+        await _persistUserSession(responseData);
+        await _syncCurrentFcmToken();
+        Utils().showToastMessage(
+          responseData['message']?.toString() ?? 'OTP verified successfully',
+        );
+        state = const AsyncValue.data(null);
+
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (_) => LocationPermissionScreen()),
+          (route) => false,
+        );
+        return true;
+      }
+
+      state = AsyncValue.error(
+        response?.data['message'] ?? 'Invalid OTP',
+        StackTrace.current,
+      );
+      return false;
+    } catch (e, stackTrace) {
+      state = AsyncValue.error(
+        'Failed to verify OTP. Please try again.',
+        stackTrace,
+      );
+      return false;
     }
   }
 }
@@ -444,6 +565,34 @@ final transdportVihicletypeProvider = StateProvider<List<TransportVehicle>>(
 Future<List<AppNotification>> notifactionpesApi(WidgetRef ref) async {
   try {
     final response = await ApiService().getRequest(noticationGet);
+
+    Future<void> createNotificationApi(
+      WidgetRef ref, {
+      required String title,
+      required String message,
+      required String type,
+    }) async {
+      try {
+        final response = await ApiService().postRequest(noticationCreate, {
+          'title': title,
+          'message': message,
+          'type': type,
+        });
+
+        if (response != null && response.statusCode == 200) {
+          // Refresh list after create
+          await notifactionpesApi(ref);
+          print('Notification created successfully');
+        } else {
+          throw Exception(
+            response?.data['message'] ?? 'Failed to create notification',
+          );
+        }
+      } catch (e) {
+        print('Error creating notification: $e');
+        throw e;
+      }
+    }
 
     if (response != null && response.statusCode == 200) {
       final data = response.data['notifications'] as List;
@@ -532,9 +681,9 @@ final bookingHistoryProvider = StateProvider<List<BookingHistory>>((ref) => []);
 
 Future<List<BookingHistory>> getBookingHistoryApi(WidgetRef ref) async {
   try {
-    final response = await ApiService().getRequest(
-      history,
-    ); // अपना endpoint adjust करें
+    final response = await ApiService().getRequest(history);
+    print(history);
+    print(response?.data);
 
     if (response != null && response.statusCode == 200) {
       final data = response.data['bookings'] as List;
@@ -585,7 +734,51 @@ Future<List<Banners>> getBannersByCategory(String categoryId) async {
   }
 }
 
+final recentDropsProvider = StateProvider<List<RecentDrop>>((ref) => []);
 final fareEstimateProvider = StateProvider<List<FareEstimate>>((ref) => []);
+Future<List<RecentDrop>> recentDropApi(WidgetRef ref) async {
+  try {
+    print("🔍 Fetching recent drops from: $recentDropUrl");
+    final token = AppPreference().getString(PreferencesKey.authToken);
+    print("📱 Token present: ${token.isNotEmpty}");
+
+    final response = await ApiService().getRequest(recentDropUrl);
+
+    print("📡 Response status: ${response?.statusCode}");
+    if (response?.statusCode != 200) {
+      print("❌ Non-200 response: ${response?.data}");
+      ref.read(recentDropsProvider.notifier).state = [];
+      return [];
+    }
+
+    print("📄 Response data type: ${response!.data.runtimeType}");
+    dynamic data = response.data;
+
+    // Handle both direct List and {data: List}
+    if (data is Map && data['data'] != null) {
+      print("📦 Nested data found");
+      data = data['data'];
+    }
+
+    if (data is List) {
+      final recentDrops =
+          data.map((json) => RecentDrop.fromJson(json)).toList();
+      print("✅ Successfully parsed ${recentDrops.length} recent drops");
+      ref.read(recentDropsProvider.notifier).state = recentDrops;
+      return recentDrops;
+    } else {
+      print("❌ Expected List, got: ${data.runtimeType}");
+      ref.read(recentDropsProvider.notifier).state = [];
+      return [];
+    }
+  } catch (e, stackTrace) {
+    print("💥 Error fetching recent drops: $e");
+    print("Stack trace: $stackTrace");
+    ref.read(recentDropsProvider.notifier).state = [];
+    return [];
+  }
+}
+
 Future<List<FareEstimate>> fareEstimateApi({
   required WidgetRef ref,
   required String vehicleTypeId,
@@ -596,8 +789,7 @@ Future<List<FareEstimate>> fareEstimateApi({
 
   required List<double> dropCoordinates,
 }) async {
-  // passenger
-  print("mdksdmksdksds ${fareEstimateUrl}");
+  print("fareEstimateApi URL: $fareEstimateUrl");
   try {
     final body = {
       "category": "${category}",
@@ -606,17 +798,26 @@ Future<List<FareEstimate>> fareEstimateApi({
       "drop": {"address": dropAddress, "coordinates": dropCoordinates},
     };
 
+    print("fareEstimateApi request body: $body");
+
     final response = await ApiService().postRequest(
       fareEstimateUrl, // {{baseUrl}}/api/passenger/fare-estimate
       body,
     );
-    print(fareEstimateUrl);
-    print(body);
+    print("fareEstimateApi status: ${response?.statusCode}");
+    print("fareEstimateApi raw response: ${response?.data}");
 
     if (response != null && response.statusCode == 200) {
       final List data = response.data['vehicles'];
 
       final fares = data.map((json) => FareEstimate.fromJson(json)).toList();
+
+      print("fareEstimateApi parsed vehicles count: ${fares.length}");
+      for (final fare in fares) {
+        print(
+          "fareEstimateApi vehicle => id: ${fare.vehicleTypeId}, name: ${fare.name}, estimate: ${fare.estimatedFare}, distanceKm: ${fare.distanceKm}, etaMinutes: ${fare.etaMinutes}",
+        );
+      }
 
       ref.read(fareEstimateProvider.notifier).state = fares;
 

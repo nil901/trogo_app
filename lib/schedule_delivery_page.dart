@@ -10,6 +10,7 @@ import 'dart:async';
 
 import 'package:trogo_app/auth/login_notifier.dart';
 import 'package:trogo_app/goods_details_page.dart';
+import 'package:trogo_app/models/estimateurl_model.dart';
 import 'package:trogo_app/models/vehicle_type_model.dart';
 import 'package:trogo_app/transportergoods/tracking_screen.dart';
 // import 'package:trogo_app/goods_details_page.dart' show GoodsDetailsPage;
@@ -123,7 +124,7 @@ class ScheduleDeliveryPage extends ConsumerStatefulWidget {
 }
 
 class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
-  int selectedVehicle = 0;
+  int? selectedVehicle;
   String pickupLocation = "Getting your location...";
   String deliveryLocation = "";
   DateTime? selectedDate;
@@ -135,6 +136,8 @@ class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
   Set<Marker> markers = {};
   Set<Polyline> polylines = {};
   CameraPosition? initialCameraPosition;
+  bool _isFetchingFareEstimate = false;
+  FareEstimate? _selectedFareEstimate;
 
   @override
   void initState() {
@@ -241,7 +244,84 @@ class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
       });
     }
   }
- VehicleType? selectedVehicleData;
+  VehicleType? selectedVehicleData;
+
+  Future<FareEstimate?> _fetchGoodsFareEstimate(VehicleType vehicle) async {
+    if (currentPosition == null || deliveryPosition == null) {
+      print("GoodsFlowManager fare estimate skipped: pickup/drop coordinates missing");
+      return null;
+    }
+
+    final fares = await fareEstimateApi(
+      ref: ref,
+      category: "goods",
+      vehicleTypeId: vehicle.id?.toString() ?? "",
+      pickupAddress: pickupLocation,
+      pickupCoordinates: [
+        currentPosition!.longitude,
+        currentPosition!.latitude,
+      ],
+      dropAddress: deliveryLocation,
+      dropCoordinates: [
+        deliveryPosition!.longitude,
+        deliveryPosition!.latitude,
+      ],
+    );
+
+    if (fares.isEmpty) {
+      print("GoodsFlowManager fare estimate response: empty list");
+      return null;
+    }
+
+    final vehicleId = vehicle.id?.toString();
+    for (final fare in fares) {
+      if (fare.vehicleTypeId == vehicleId) {
+        print(
+          "GoodsFlowManager matched fare => vehicleId: ${fare.vehicleTypeId}, name: ${fare.name}, estimatedFare: ${fare.estimatedFare}, distanceKm: ${fare.distanceKm}",
+        );
+        return fare;
+      }
+    }
+
+    print(
+      "GoodsFlowManager fallback fare => requestedVehicleId: $vehicleId, returnedVehicleId: ${fares.first.vehicleTypeId}, estimatedFare: ${fares.first.estimatedFare}",
+    );
+    return fares.first;
+  }
+
+  bool _validateBeforeNext() {
+    if (pickupLocation.isEmpty ||
+        pickupLocation.contains("Getting") ||
+        pickupLocation.contains("Tap to")) {
+      _showValidationMessage("Please select pickup location");
+      return false;
+    }
+
+    if (deliveryLocation.isEmpty || deliveryPosition == null) {
+      _showValidationMessage("Please select delivery location");
+      return false;
+    }
+
+    if (selectedTime == null) {
+      _showValidationMessage("Please select time");
+      return false;
+    }
+
+    if (selectedVehicleData == null) {
+      _showValidationMessage("Please select a vehicle");
+      return false;
+    }
+
+    return true;
+  }
+
+  void _showValidationMessage(String message) {
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), backgroundColor: Colors.red.shade600),
+    );
+  }
+
   void _updateMapMarkers() {
     markers.clear();
 
@@ -680,7 +760,7 @@ class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
                               SizedBox(height: 12),
 
                               SizedBox(
-                                height: 120,
+                                height: 154,
                                 child: ListView.builder(
                                   scrollDirection: Axis.horizontal,
                                   physics: BouncingScrollPhysics(),
@@ -690,12 +770,19 @@ class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
                                     bool isSelected = selectedVehicle == index;
                                     return GestureDetector(
                                       onTap: () {
-                                        setState(() => selectedVehicle = index);
-                                         selectedVehicleData = vehicle;
+                                        setState(() {
+                                          selectedVehicle = index;
+                                          selectedVehicleData = vehicle;
+                                          _selectedFareEstimate = null;
+                                        });
                                       },
                                       child: Container(
-                                        width: 120,
+                                        width: 132,
                                         margin: EdgeInsets.only(right: 12),
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 10,
+                                          vertical: 12,
+                                        ),
                                         decoration: BoxDecoration(
                                           color:
                                               isSelected
@@ -731,26 +818,37 @@ class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
                                                   vehicle.image,
                                                   width: 30,
                                                   height: 30,
+                                                  fit: BoxFit.contain,
                                                 ),
                                               ),
                                             ),
                                             SizedBox(height: 8),
-                                            Text(
-                                              vehicle.name,
-                                              style: TextStyle(
-                                                fontSize: 13,
-                                                fontWeight: FontWeight.w600,
-                                                color:
-                                                    isSelected
-                                                        ? Colors.blue.shade700
-                                                        : Colors.black87,
+                                            Expanded(
+                                              child: Center(
+                                                child: Text(
+                                                  vehicle.name,
+                                                  textAlign: TextAlign.center,
+                                                  maxLines: 2,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                  style: TextStyle(
+                                                    fontSize: 13,
+                                                    height: 1.25,
+                                                    fontWeight: FontWeight.w600,
+                                                    color:
+                                                        isSelected
+                                                            ? Colors.blue.shade700
+                                                            : Colors.black87,
+                                                  ),
+                                                ),
                                               ),
                                             ),
-                                            SizedBox(height: 4),
+                                            SizedBox(height: 6),
                                             Text(
                                                "₹${vehicle.rate} / ${vehicle.pricingType == "PER_HOUR" ? "Hour" : "KM"}",
                                               style: TextStyle(
                                                 fontSize: 11,
+                                                fontWeight: FontWeight.w500,
                                                 color: Colors.grey.shade600,
                                               ),
                                             ),
@@ -1017,29 +1115,50 @@ class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
         pickupLocation.isNotEmpty &&
         deliveryLocation.isNotEmpty &&
         !pickupLocation.contains("Getting") &&
-        !pickupLocation.contains("Tap to");
+        !pickupLocation.contains("Tap to") &&
+        selectedTime != null &&
+        selectedVehicleData != null;
 
     return GestureDetector(
-      onTap: isReady
-          ? () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder:
-                        (_) => GoodsDetailsPage(
-                          pickupLocation: pickupLocation,
-                          deliveryLocation: deliveryLocation,
-                          selectedDate: selectedDate,
-                          selectedTime: selectedTime,
-                          selectedVehicle: selectedVehicleData!,
-                          pickupPosition: currentPosition,
-                          deliveryPosition: deliveryPosition,
-                          onBookingCreated: widget.onBookingCreated, // Pass callback
-                        ),
-                  ),
-                );
-              }
-          : null,
+      onTap: () async {
+        if (!_validateBeforeNext()) return;
+        final vehicle = selectedVehicleData;
+        if (vehicle == null) {
+          _showValidationMessage("Please select a vehicle");
+          return;
+        }
+
+        setState(() {
+          _isFetchingFareEstimate = true;
+        });
+
+        final fareEstimate = await _fetchGoodsFareEstimate(vehicle);
+
+        if (!mounted) return;
+
+        setState(() {
+          _selectedFareEstimate = fareEstimate;
+          _isFetchingFareEstimate = false;
+        });
+
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder:
+                (_) => GoodsDetailsPage(
+                  pickupLocation: pickupLocation,
+                  deliveryLocation: deliveryLocation,
+                  selectedDate: selectedDate,
+                  selectedTime: selectedTime,
+                  selectedVehicle: vehicle,
+                  pickupPosition: currentPosition,
+                  deliveryPosition: deliveryPosition,
+                  fareEstimate: fareEstimate,
+                  onBookingCreated: widget.onBookingCreated,
+                ),
+          ),
+        );
+      },
       child: AnimatedContainer(
         duration: Duration(milliseconds: 300),
         width: double.infinity,
@@ -1110,7 +1229,7 @@ class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
             ),
             dialogBackgroundColor: Colors.white,
           ),
-          child: child!,
+          child: child ?? const SizedBox.shrink(),
         );
       },
     );
@@ -1134,7 +1253,7 @@ class _ScheduleDeliveryPageState extends ConsumerState<ScheduleDeliveryPage> {
             ),
             dialogBackgroundColor: Colors.white,
           ),
-          child: child!,
+          child: child ?? const SizedBox.shrink(),
         );
       },
     );

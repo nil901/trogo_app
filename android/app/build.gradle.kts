@@ -3,6 +3,9 @@ import java.io.FileInputStream
 
 plugins {
     id("com.android.application")
+    // START: FlutterFire Configuration
+    id("com.google.gms.google-services")
+    // END: FlutterFire Configuration
     id("kotlin-android")
     id("dev.flutter.flutter-gradle-plugin")
 }
@@ -21,6 +24,8 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
+        // required by flutter_local_notifications and other libs
+        isCoreLibraryDesugaringEnabled = true
     }
 
     kotlinOptions {
@@ -51,6 +56,12 @@ android {
             isShrinkResources = true
         }
     }
+}
+
+/* add desugaring dependency for Java 8+ features used in AARs */
+dependencies {
+    // version required by flutter_local_notifications and other modern AARs
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 }
 
 flutter {

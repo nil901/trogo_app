@@ -1,13 +1,37 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:trogo_app/auth/login_notifier.dart';
+import 'package:trogo_app/localization/app_strings.dart';
 import 'package:trogo_app/location_permission_screen.dart';
 
 //import 'location_permission_screen.dart';
 
-class OtpScreen extends StatelessWidget {
-  const OtpScreen({super.key});
+class OtpScreen extends ConsumerStatefulWidget {
+  final String mobile;
+
+  const OtpScreen({
+    super.key,
+    required this.mobile,
+  });
+
+  @override
+  ConsumerState<OtpScreen> createState() => _OtpScreenState();
+}
+
+class _OtpScreenState extends ConsumerState<OtpScreen> {
+  final TextEditingController _otpController = TextEditingController();
+
+  @override
+  void dispose() {
+    _otpController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
+    final loginState = ref.watch(loginProvider);
+
     return Scaffold(
       backgroundColor: Colors.white,
       resizeToAvoidBottomInset: true,
@@ -29,8 +53,8 @@ class OtpScreen extends StatelessWidget {
               const SizedBox(height: 8),
 
               // 📝 TITLE + BLUE LINE
-              const Text(
-                "Enter OTP Verification",
+              Text(
+                AppStrings.t('enterOtpVerification'),
                 style: TextStyle(fontSize: 22, fontWeight: FontWeight.w500),
               ),
 
@@ -47,9 +71,20 @@ class OtpScreen extends StatelessWidget {
 
               const SizedBox(height: 12),
 
-              const Text(
-                "Enter the code from the sms we sent to +8801774280874",
+              Text(
+                AppStrings.t('enterCodeSentToMobile'),
                 style: TextStyle(fontSize: 11, color: Colors.grey),
+              ),
+
+              const SizedBox(height: 6),
+
+              Text(
+                widget.mobile,
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.black87,
+                ),
               ),
 
               const SizedBox(height: 50),
@@ -57,14 +92,29 @@ class OtpScreen extends StatelessWidget {
               // ✅ OTP INPUT (SINGLE FIELD – iOS STYLE)
               Center(
                 child: SizedBox(
-                  width: 220,
+                  width: 200,
                   child: TextField(
+                    controller: _otpController,
                     keyboardType: TextInputType.number,
-                    maxLength: 4,
+                    maxLength: 6,
+                    inputFormatters:  [
+                      FilteringTextInputFormatter.digitsOnly,
+                      LengthLimitingTextInputFormatter(6),
+                    ],
                     textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 22, letterSpacing: 22),
+                    style: const TextStyle(
+                      fontSize: 24,
+                      letterSpacing: 18,
+                      fontWeight: FontWeight.w600,
+                    ),
                     decoration: const InputDecoration(
                       counterText: "",
+                      filled: false,
+                      fillColor: Colors.transparent,
+                      contentPadding: EdgeInsets.symmetric(vertical: 10),
+                      border: UnderlineInputBorder(
+                        borderSide: BorderSide(color: Color(0xFFBDBDBD)),
+                      ),
                       enabledBorder: UnderlineInputBorder(
                         borderSide: BorderSide(color: Color(0xFFBDBDBD)),
                       ),
@@ -81,9 +131,9 @@ class OtpScreen extends StatelessWidget {
 
               const SizedBox(height: 18),
 
-              const Center(
+              Center(
                 child: Text(
-                  "Didn't receive code? Resend in 11s",
+                  AppStrings.t('didNotReceiveCode'),
                   style: TextStyle(fontSize: 12, color: Colors.grey),
                 ),
               ),
@@ -107,17 +157,41 @@ class OtpScreen extends StatelessWidget {
                       ),
                     ),
                     onPressed: () {
-                      // ✅ Navigate to Location Permission Screen
-                      Navigator.pushReplacement(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const LocationPermissionScreen(),
-                        ),
-                      );
+                      final otp = _otpController.text.trim();
+                      if (otp.isEmpty) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text(AppStrings.t('pleaseEnterOtp'))),
+                        );
+                        return;
+                      }
+                      if (otp.length != 6) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(AppStrings.t('pleaseEnterSixDigitOtp')),
+                          ),
+                        );
+                        return;
+                      }
+
+                      ref.read(loginProvider.notifier).verifyOtp(
+                            mobile: widget.mobile,
+                            otp: otp,
+                            context: context,
+                          );
                     },
-                    child: const Text(
-                      "Verify OTP",
-                      style: TextStyle(color: Colors.white, fontSize: 16),
+                    child: loginState.maybeWhen(
+                      loading: () => const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      ),
+                      orElse: () => Text(
+                        AppStrings.t('verifyOtp'),
+                        style: const TextStyle(color: Colors.white, fontSize: 16),
+                      ),
                     ),
                   ),
                 ),

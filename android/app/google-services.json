@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "80169610465",
+    "project_id": "trogo-61f6a",
+    "storage_bucket": "trogo-61f6a.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:80169610465:android:cd91aee1573ff61ac3dba0",
+        "android_client_info": {
+          "package_name": "com.trogo.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD0iR0o1WW4YhWKx029xixZ5Tv2f8lAljo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:80169610465:android:acfadc23378e2f31c3dba0",
+        "android_client_info": {
+          "package_name": "com.trogo_Driver"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD0iR0o1WW4YhWKx029xixZ5Tv2f8lAljo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

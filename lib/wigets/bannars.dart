@@ -201,6 +201,9 @@ final fetchCategoryBannersProvider = FutureProvider.autoDispose.family<List<MyBa
   return banners;
 });
 
+// Alias for convenience (used in modern_home_screen)
+final fetchBannersProvider = fetchCategoryBannersProvider;
+
 // Category Banners Page
 class CategoryBannersPage extends ConsumerWidget {
   final String categoryId;
@@ -218,9 +221,10 @@ class CategoryBannersPage extends ConsumerWidget {
     
     return Scaffold(
       appBar: AppBar(
-        title: Text(categoryName),
-        backgroundColor: Colors.blue,
-        foregroundColor: Colors.white,
+        backgroundColor: Colors.white,
+        foregroundColor: Colors.black,
+        elevation: 0,
+        title:  Text('$categoryName'),
       ),
       body: bannersAsync.when(
         loading: () => const Center(child: CircularProgressIndicator()),

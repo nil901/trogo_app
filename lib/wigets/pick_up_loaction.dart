@@ -617,7 +617,7 @@ class _PickupDropUIState extends State<PickupDropUI> {
                               widget.destinationLocation != null
                                   ? "Drop off"
                                   : "Drop off (optional)",
-                          address: widget.destinationLocation?.address,
+                          address: _tempDropoffLocation?.address,
                           iconColor: Colors.red,
                           isPickup: false,
                         ),

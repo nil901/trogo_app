@@ -28,7 +28,9 @@ class _AroundYouCarsMapState extends State<AroundYouCarsMap> {
 
   Future<void> _init() async {
     await _loadCarIcon();
+    if (!mounted) return;
     await _getLocation();
+    if (!mounted) return;
     if (_currentPosition != null) {
       _addNearbyCars();
     }
@@ -36,10 +38,15 @@ class _AroundYouCarsMapState extends State<AroundYouCarsMap> {
 
   // ---------- CAR ICON ----------
   Future<void> _loadCarIcon() async {
-    _carIcon = await BitmapDescriptor.fromAssetImage(
-      const ImageConfiguration(size: Size(10, 10)),
-      "assets/images/car.png",
-    );
+    try {
+      _carIcon = await BitmapDescriptor.fromAssetImage(
+        const ImageConfiguration(size: Size(40, 40)),
+        "assets/images/sedan.png",  // ✅ Use existing sedan.png
+      );
+    } catch (e) {
+      debugPrint('Car icon failed: $e, using default');
+      _carIcon = BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueOrange);
+    }
   }
 
   // ---------- LOCATION ----------
@@ -54,6 +61,7 @@ class _AroundYouCarsMapState extends State<AroundYouCarsMap> {
       desiredAccuracy: LocationAccuracy.high,
     );
 
+    if (!mounted) return;
     setState(() {
       _currentPosition = position;
     });
@@ -76,7 +84,7 @@ class _AroundYouCarsMapState extends State<AroundYouCarsMap> {
             _currentPosition!.latitude + latOffset,
             _currentPosition!.longitude + lngOffset,
           ),
-          icon: _carIcon!,
+          icon: _carIcon ?? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueOrange),
           anchor: const Offset(0.5, 0.5),
           rotation: random.nextInt(360).toDouble(),
         ),
@@ -97,6 +105,7 @@ class _AroundYouCarsMapState extends State<AroundYouCarsMap> {
       ),
     );
 
+    if (!mounted) return;
     setState(() {});
   }
 

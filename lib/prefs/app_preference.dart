@@ -47,9 +47,23 @@ class AppPreference {
     return _preferences?.getBool(key) ?? defValue;
   }
 
+  Future setDouble(String key, double value) async {
+    await _preferences?.setDouble(key, value);
+  }
+
+  double getDouble(String key, {double defValue = 0.0}) {
+    return _preferences?.getDouble(key) ?? defValue;
+  }
+
   Future clearSharedPreferences() async {
-    await _preferences?.clear();
-    await _preferences!.remove(PreferencesKey.authToken);
+    await _preferences?.remove(PreferencesKey.authToken);
+    await _preferences?.remove(PreferencesKey.userId);
+    await _preferences?.remove(PreferencesKey.userName);
+    await _preferences?.remove(PreferencesKey.userEmail);
+    await _preferences?.remove(PreferencesKey.userMobile);
+    await _preferences?.remove(PreferencesKey.userGender);
+    await _preferences?.remove(PreferencesKey.userProfileImage);
+    await _preferences?.remove(PreferencesKey.activeRideJson);
     // await _preferences!.remove(PreferencesKey.introPage);
     // await _preferences!.remove(PreferencesKey.isLoggedIn);
     // await _preferences!.remove(PreferencesKey.isLoggedInFirstTimeSt);

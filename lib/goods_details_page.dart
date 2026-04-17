@@ -6,12 +6,19 @@ import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
 import 'dart:convert';
 import 'package:intl/intl.dart';
+import 'package:trogo_app/location_permission_screen.dart';
+import 'package:path/path.dart' as path;
+import 'package:trogo_app/api_service/urls.dart';
+import 'package:trogo_app/main_bottom_nav.dart';
+import 'package:trogo_app/models/estimateurl_model.dart';
 import 'package:trogo_app/models/vehicle_type_model.dart';
 import 'package:trogo_app/prefs/app_preference.dart';
 import 'package:trogo_app/prefs/PreferencesKey.dart';
 import 'package:trogo_app/transportergoods/tracking_screen.dart';
+import 'package:image/image.dart' as img;
 
 class GoodsDetailsPage extends StatefulWidget {
   final String pickupLocation;
@@ -21,6 +28,7 @@ class GoodsDetailsPage extends StatefulWidget {
   final VehicleType selectedVehicle;
   final Position? pickupPosition;
   final Position? deliveryPosition;
+  final FareEstimate? fareEstimate;
   final Function(String, Map<String, dynamic>)? onBookingCreated;
 
   const GoodsDetailsPage({
@@ -32,6 +40,7 @@ class GoodsDetailsPage extends StatefulWidget {
     required this.selectedVehicle,
     this.pickupPosition,
     this.deliveryPosition,
+    this.fareEstimate,
     this.onBookingCreated,
   }) : super(key: key);
 
@@ -63,6 +72,10 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
   // Images
   List<File> pickedImages = [];
   final ImagePicker _picker = ImagePicker();
+  static const int _maxImageCount = 3;
+  static const int _compressedImageWidth = 1280;
+  static const int _compressedImageHeight = 1280;
+  static const int _compressedImageQuality = 70;
 
   // Form and state
   final _formKey = GlobalKey<FormState>();
@@ -86,11 +99,14 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
   void _initializePricingFields() {
     final pricingType = widget.selectedVehicle.pricingType ?? 'PER_KM';
 
+    if (widget.fareEstimate != null) {
+      _distanceKm = widget.fareEstimate!.distanceKm;
+      _estimatedFare = widget.fareEstimate!.estimatedFare.toDouble();
+    }
+
     if (pricingType == 'PER_HOUR') {
-      // PER_HOUR साठी default 1 hour
       _hours = 1.0;
     } else {
-      // PER_KM साठी distance calculate करा
       _calculateDistance();
     }
   }
@@ -106,23 +122,27 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
           widget.deliveryPosition!.latitude,
           widget.deliveryPosition!.longitude,
         );
+        final distanceKm = distanceInMeters / 1000;
 
         setState(() {
-          _distanceKm = distanceInMeters / 1000;
+          _distanceKm = distanceKm > 0 ? distanceKm : 10.0;
           _isCalculatingDistance = false;
         });
+        _calculateFare();
       } catch (e) {
         print('Error calculating distance: $e');
         setState(() {
-          _distanceKm = 10.0; // default distance
+          _distanceKm = 10.0;
           _isCalculatingDistance = false;
         });
+        _calculateFare();
       }
     } else {
       print('Pickup or delivery position is null');
       setState(() {
-        _distanceKm = 10.0; // default distance
+        _distanceKm = 10.0;
       });
+      _calculateFare();
     }
   }
 
@@ -134,31 +154,34 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
 
   void _calculateFare() {
     try {
+      if (widget.fareEstimate != null) {
+        setState(() {
+          _estimatedFare = widget.fareEstimate!.estimatedFare.toDouble();
+          _distanceKm ??= widget.fareEstimate!.distanceKm;
+        });
+        return;
+      }
+
       double baseFare = 100.0;
-      // Ensure vehicleRate is double
       double vehicleRate = (widget.selectedVehicle.rate ?? 0.0).toDouble();
       final pricingType = widget.selectedVehicle.pricingType ?? 'PER_KM';
 
       double estimatedFare = baseFare;
 
-      // pricingType नुसार calculation
       if (pricingType == 'PER_HOUR') {
-        // PER_HOUR साठी: rate * hours
         if (_hours != null && _hours! > 0) {
           estimatedFare += vehicleRate * _hours!;
         } else {
-          estimatedFare += vehicleRate * 1; // default 1 hour
+          estimatedFare += vehicleRate * 1;
         }
       } else {
-        // PER_KM साठी: rate * distance + weight charges
         double weightValue = double.tryParse(goodsWeight) ?? 0.0;
         double weightMultiplier = weightValue * 5.0;
 
         if (_distanceKm != null && _distanceKm! > 0) {
           estimatedFare += (vehicleRate * _distanceKm!) + weightMultiplier;
         } else {
-          estimatedFare +=
-              (vehicleRate * 10.0) + weightMultiplier; // default 10 km
+          estimatedFare += (vehicleRate * 10.0) + weightMultiplier;
         }
       }
 
@@ -167,10 +190,8 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
       });
     } catch (e) {
       print('Error calculating fare: $e');
-      print('Vehicle rate: ${widget.selectedVehicle.rate}');
-      print('Rate type: ${widget.selectedVehicle.rate.runtimeType}');
       setState(() {
-        _estimatedFare = 100.0; // minimum fare
+        _estimatedFare = 100.0;
       });
     }
   }
@@ -180,21 +201,24 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
       context: context,
       builder:
           (context) => AlertDialog(
-            title: Text("Select Image Source"),
+            title: Text(
+              "Select Image Source",
+              style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black),
+            ),
             content: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 ListTile(
-                  leading: Icon(Icons.camera_alt, color: Colors.blue),
-                  title: Text("Camera"),
+                  leading: Icon(Icons.camera_alt, color: Colors.black),
+                  title: Text("Camera", style: TextStyle(color: Colors.grey[800])),
                   onTap: () {
                     Navigator.pop(context);
                     _pickImageFromCamera();
                   },
                 ),
                 ListTile(
-                  leading: Icon(Icons.photo_library, color: Colors.green),
-                  title: Text("Gallery"),
+                  leading: Icon(Icons.photo_library, color: Colors.black),
+                  title: Text("Gallery", style: TextStyle(color: Colors.grey[800])),
                   onTap: () {
                     Navigator.pop(context);
                     _pickImageFromGallery();
@@ -209,113 +233,185 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
   Future<void> _pickImageFromCamera() async {
     final status = await Permission.camera.request();
     if (!status.isGranted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text("Please allow camera permission")));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Please allow camera permission"),
+          backgroundColor: Colors.red[700],
+        ),
+      );
       return;
     }
 
     final XFile? image = await _picker.pickImage(
       source: ImageSource.camera,
-      imageQuality: 85,
+      imageQuality: _compressedImageQuality,
       maxWidth: 1920,
       maxHeight: 1080,
     );
 
     if (image != null) {
-      if (pickedImages.length < 3) {
+      if (pickedImages.length < _maxImageCount) {
+        final compressedImage = await _compressImageFile(File(image.path));
         setState(() {
-          pickedImages.add(File(image.path));
+          pickedImages.add(compressedImage);
         });
       } else {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text("Maximum 3 photos allowed")));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Maximum $_maxImageCount photos allowed"),
+            backgroundColor: Colors.red[700],
+          ),
+        );
       }
     }
   }
 
- Future<void> _pickImageFromGallery() async {
+  Future<void> _pickImageFromGallery() async {
+    PermissionStatus status;
 
-  PermissionStatus status;
-
-  if (Platform.isAndroid) {
-
-    status = await Permission.storage.request();
-
-    // Android 13+
-    if (!status.isGranted) {
+    if (Platform.isAndroid) {
+      status = await Permission.storage.request();
+      if (!status.isGranted) {
+        status = await Permission.photos.request();
+      }
+    } else {
       status = await Permission.photos.request();
     }
 
-  } else {
-    status = await Permission.photos.request();
-  }
-
-  if (!status.isGranted) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("Gallery permission denied")),
-    );
-    return;
-  }
-
-  final List<XFile>? images = await _picker.pickMultiImage(
-    imageQuality: 85,
-  );
-
-  if (images != null) {
-    setState(() {
-      pickedImages.addAll(
-        images.take(3 - pickedImages.length)
-              .map((e) => File(e.path)));
-    });
-  }
-}
-
-  Future<void> _submitBooking() async {
-    if (!_formKey.currentState!.validate()) {
+    if (!status.isGranted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Please fill all required fields")),
+        const SnackBar(
+          content: Text("Gallery permission denied"),
+          backgroundColor: Colors.red,
+        ),
       );
       return;
     }
 
-    final pricingType = widget.selectedVehicle.pricingType ?? 'PER_KM';
+    final List<XFile>? images = await _picker.pickMultiImage(
+      imageQuality: _compressedImageQuality,
+    );
 
-    // PER_HOUR validation
-    if (pricingType == 'PER_HOUR') {
-      if (_hours == null || _hours! <= 0) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text("Please enter valid hours")));
-        return;
+    if (images != null && images.isNotEmpty) {
+      final remainingSlots = _maxImageCount - pickedImages.length;
+      final selectedImages = images.take(remainingSlots).toList();
+      final compressedImages = <File>[];
+
+      for (final image in selectedImages) {
+        compressedImages.add(await _compressImageFile(File(image.path)));
+      }
+
+      setState(() {
+        pickedImages.addAll(compressedImages);
+      });
+
+      if (images.length > remainingSlots) {
+        _showError("Maximum $_maxImageCount photos allowed");
       }
     }
-    // PER_KM validation - weight required
-    else {
-      if (goodsWeight.isEmpty || double.tryParse(goodsWeight) == null) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text("Please enter valid weight")));
-        return;
+  }
+
+  Future<File> _compressImageFile(File file) async {
+    try {
+      final bytes = await file.readAsBytes();
+      final decodedImage = img.decodeImage(bytes);
+      if (decodedImage == null) {
+        final fallbackPath = path.join(
+          Directory.systemTemp.path,
+          'trogo_${DateTime.now().millisecondsSinceEpoch}.jpg',
+        );
+        return File(
+          fallbackPath,
+        ).writeAsBytes(await file.readAsBytes(), flush: true);
+      }
+
+      final resizedImage = img.copyResize(
+        decodedImage,
+        width: decodedImage.width > _compressedImageWidth
+            ? _compressedImageWidth
+            : decodedImage.width,
+        height: decodedImage.height > _compressedImageHeight
+            ? _compressedImageHeight
+            : decodedImage.height,
+      );
+
+      final compressedBytes = img.encodeJpg(
+        resizedImage,
+        quality: _compressedImageQuality,
+      );
+
+      final compressedPath = path.join(
+        Directory.systemTemp.path,
+        'trogo_${DateTime.now().millisecondsSinceEpoch}_${path.basenameWithoutExtension(file.path)}.jpg',
+      );
+
+      return File(compressedPath).writeAsBytes(compressedBytes, flush: true);
+    } catch (_) {
+      return file;
+    }
+  }
+
+  bool _validateBookingData() {
+    if (!_formKey.currentState!.validate()) {
+      _showError("Please fill all required fields");
+      return false;
+    }
+
+    goodsName = goodsName.trim();
+    receiverName = receiverName.trim();
+    receiverPhone = receiverPhone.trim();
+
+    if (goodsName.isEmpty) {
+      _showError("Please enter goods name");
+      return false;
+    }
+
+    if (receiverName.isEmpty) {
+      _showError("Please enter receiver name");
+      return false;
+    }
+
+    if (receiverPhone.isEmpty || receiverPhone.length < 8) {
+      _showError("Please enter valid receiver phone");
+      return false;
+    }
+
+    if (widget.pickupLocation.trim().isEmpty ||
+        widget.deliveryLocation.trim().isEmpty) {
+      _showError("Pickup and delivery locations are required");
+      return false;
+    }
+
+    final pricingType = widget.selectedVehicle.pricingType ?? 'PER_KM';
+    if (pricingType == 'PER_HOUR') {
+      if (_hours == null || _hours! <= 0) {
+        _showError("Please enter valid hours");
+        return false;
+      }
+    } else {
+      if (goodsWeight.trim().isEmpty || double.tryParse(goodsWeight) == null) {
+        _showError("Please enter valid weight");
+        return false;
       }
     }
 
     if (pickedImages.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text("Please take at least one picture of the package"),
-        ),
-      );
+      _showError("Please take at least one picture of the package");
+      return false;
+    }
+
+    return true;
+  }
+
+  Future<void> _submitBooking() async {
+    if (!_validateBookingData()) {
       return;
     }
 
     setState(() => isSubmitting = true);
 
     try {
-      final apiUrl = Uri.parse(
-        'https://trogo-app-backend.onrender.com/api/bookings/bookings',
-      );
+      final apiUrl = Uri.parse(bookingCreateUrl);
 
       final formattedDate = DateFormat(
         'yyyy-MM-dd',
@@ -325,7 +421,6 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
               ? '${widget.selectedTime!.hour.toString().padLeft(2, '0')}:${widget.selectedTime!.minute.toString().padLeft(2, '0')}'
               : DateFormat('HH:mm').format(DateTime.now());
 
-      // final vehicleTypeId = await _getVehicleTypeId(widget.selectedVehicle.id);
       final vehicleTypeId = widget.selectedVehicle.id.toString();
       final authToken = AppPreference().getString(PreferencesKey.authToken);
 
@@ -333,11 +428,9 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
         throw Exception("Authentication failed");
       }
 
-      // Multipart request
       final request = http.MultipartRequest('POST', apiUrl);
       request.headers['Authorization'] = 'Bearer $authToken';
 
-      // Common required fields
       request.fields.addAll({
         'bookingType': 'goods',
         'vehicleTypeId': vehicleTypeId,
@@ -354,13 +447,9 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
 
       final pricingType = widget.selectedVehicle.pricingType ?? 'PER_KM';
 
-      // PER_HOUR specific
       if (pricingType == 'PER_HOUR') {
         request.fields['hours'] = (_hours ?? 1).toString();
-        // PER_HOUR साठी weight required नाही
-      }
-      // PER_KM specific
-      else {
+      } else {
         request.fields['goods[weightKg]'] =
             _convertToKg(goodsWeight, weightUnit).toString();
         if (_distanceKm != null) {
@@ -368,13 +457,11 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
         }
       }
 
-      // Drop coordinates - safe null handling
       final dropLng = widget.deliveryPosition?.longitude ?? 0.0;
       final dropLat = widget.deliveryPosition?.latitude ?? 0.0;
       request.fields['drop[coordinates][0]'] = dropLng.toString();
       request.fields['drop[coordinates][1]'] = dropLat.toString();
 
-      // Pickup coordinates - safe null handling
       if (widget.pickupPosition != null) {
         request.fields['pickup[address]'] = widget.pickupLocation;
         request.fields['pickup[coordinates][0]'] =
@@ -383,33 +470,14 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
             widget.pickupPosition!.latitude.toString();
       }
 
-      // Debug - show what parameters are being sent
-      print('=== API REQUEST PARAMETERS ===');
-      print('Vehicle Name: ${widget.selectedVehicle.name}');
-      print('Vehicle Pricing Type: $pricingType');
-      final vehicleRate = (widget.selectedVehicle.rate ?? 0.0).toDouble();
-      print('Vehicle Rate: $vehicleRate');
-
-      if (pricingType == 'PER_HOUR') {
-        print('Hours: $_hours');
-        print('Total Fare Calculation: 100 + ($vehicleRate × ${_hours ?? 1})');
-      } else {
-        print('Weight: $goodsWeight $weightUnit');
-        print('Distance (km): $_distanceKm');
-        print(
-          'Total Fare Calculation: 100 + ($vehicleRate × ${_distanceKm ?? 10}) + ($goodsWeight × 5)',
-        );
-      }
-      print('Estimated Fare: $_estimatedFare');
-      print('==============================');
-
-      // Images
       for (int i = 0; i < pickedImages.length; i++) {
         request.files.add(
           await http.MultipartFile.fromPath(
             'packageImage',
             pickedImages[i].path,
-            filename: 'package_${DateTime.now().millisecondsSinceEpoch}_$i.jpg',
+            filename:
+                'package_${DateTime.now().millisecondsSinceEpoch}_$i.jpg',
+            contentType: MediaType('image', 'jpeg'),
           ),
         );
       }
@@ -426,27 +494,33 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
 
           _showSuccess("Booking created successfully!");
 
-          // Navigate back with booking data
           if (widget.onBookingCreated != null) {
             widget.onBookingCreated!(bookingId, bookingData);
           }
 
-          // Delay navigation to show success message
-          // Future.delayed(Duration(seconds: 1), () {
-          //   Navigator.pushAndRemoveUntil(
-          //     context,
-          //     MaterialPageRoute(
-          //       builder:
-          //           (_) => GoodsTrackingPage(
-          //             bookingId: bookingId,
-          //             bookingData: bookingData,
-          //           ),
-          //     ),
-          //     (route) => false,
-          //   );
-          // });
-          Navigator.pop(context);
-          Navigator.pop(context);
+          final selectedLocation = SelectedLocation(
+            latitude:
+                widget.pickupPosition?.latitude ??
+                widget.deliveryPosition?.latitude ??
+                0.0,
+            longitude:
+                widget.pickupPosition?.longitude ??
+                widget.deliveryPosition?.longitude ??
+                0.0,
+            address: widget.pickupLocation,
+          );
+
+          Navigator.pushAndRemoveUntil(
+            context,
+            MaterialPageRoute(
+              builder:
+                  (_) => MainBottomNav(
+                    selectedLocation: selectedLocation,
+                    initialIndex: 1,
+                  ),
+            ),
+            (route) => false,
+          );
         } else {
           throw Exception("Booking failed - no booking data received");
         }
@@ -461,20 +535,6 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
     } finally {
       setState(() => isSubmitting = false);
     }
-  }
-
-  Future<String> _getVehicleTypeId(int selectedIndex) async {
-    // These should come from your API
-    final vehicleIds = [
-      "69492240c7935ef1fa6dadf5", // Mini Truck
-      "69492240c7935ef1fa6dadf6", // Truck
-      "69492240c7935ef1fa6dadf7", // Large Truck
-    ];
-
-    if (selectedIndex >= 0 && selectedIndex < vehicleIds.length) {
-      return vehicleIds[selectedIndex];
-    }
-    return vehicleIds[0];
   }
 
   double _convertToKg(String weight, String unit) {
@@ -502,17 +562,26 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
 
   void _showSuccess(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), backgroundColor: Colors.green),
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.green[700],
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ),
     );
   }
 
   void _showError(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), backgroundColor: Colors.red),
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.red[700],
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ),
     );
   }
 
-  // PER_HOUR साठी hours input
   Widget _buildHoursInput() {
     final vehicleRate = (widget.selectedVehicle.rate ?? 0.0).toDouble();
 
@@ -522,16 +591,36 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
         SizedBox(height: 16),
         Text(
           "Estimated Hours Required *",
-          style: TextStyle(fontWeight: FontWeight.w600),
+          style: TextStyle(
+            fontWeight: FontWeight.w600,
+            color: Colors.black,
+            fontSize: 15,
+          ),
         ),
         SizedBox(height: 8),
         TextFormField(
           initialValue: _hours?.toStringAsFixed(1),
           keyboardType: TextInputType.numberWithOptions(decimal: true),
+          style: TextStyle(color: Colors.black),
           decoration: InputDecoration(
             hintText: "e.g., 2.5 hours",
-            border: OutlineInputBorder(),
+            hintStyle: TextStyle(color: Colors.grey[400]),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: Colors.grey[300]!),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: Colors.grey[300]!),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: Colors.black, width: 2),
+            ),
             suffixText: "hours",
+            suffixStyle: TextStyle(color: Colors.grey[600], fontWeight: FontWeight.w500),
+            filled: true,
+            fillColor: Colors.grey[50],
           ),
           onChanged: (value) {
             final hours = double.tryParse(value) ?? 0.0;
@@ -547,15 +636,30 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
           },
         ),
         SizedBox(height: 8),
-        Text(
-          "Rate: ₹$vehicleRate/hour",
-          style: TextStyle(color: Colors.green, fontWeight: FontWeight.w500),
+        Container(
+          padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: Colors.grey[100],
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.info_outline, size: 16, color: Colors.grey[600]),
+              SizedBox(width: 8),
+              Text(
+                "Rate: ₹$vehicleRate/hour",
+                style: TextStyle(
+                  color: Colors.grey[800],
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
         ),
       ],
     );
   }
 
-  // PER_KM साठी weight आणि distance
   Widget _buildWeightAndDistanceInput() {
     final vehicleRate = (widget.selectedVehicle.rate ?? 0.0).toDouble();
 
@@ -564,16 +668,38 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
       children: [
         SizedBox(height: 16),
         // Weight Section
-        Text("Weight *", style: TextStyle(fontWeight: FontWeight.w600)),
+        Text(
+          "Weight *",
+          style: TextStyle(
+            fontWeight: FontWeight.w600,
+            color: Colors.black,
+            fontSize: 15,
+          ),
+        ),
         SizedBox(height: 8),
         Row(
           children: [
             Expanded(
               child: TextFormField(
                 keyboardType: TextInputType.numberWithOptions(decimal: true),
+                style: TextStyle(color: Colors.black),
                 decoration: InputDecoration(
                   hintText: "Enter weight",
-                  border: OutlineInputBorder(),
+                  hintStyle: TextStyle(color: Colors.grey[400]),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: Colors.grey[300]!),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: Colors.grey[300]!),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: Colors.black, width: 2),
+                  ),
+                  filled: true,
+                  fillColor: Colors.grey[50],
                 ),
                 onChanged: (value) {
                   setState(() => goodsWeight = value);
@@ -590,13 +716,24 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
                 },
               ),
             ),
-            SizedBox(width: 16),
+            SizedBox(width: 12),
             Expanded(
               child: DropdownButtonFormField<String>(
+                isExpanded: true,
                 value: weightUnit,
+                style: TextStyle(color: Colors.black),
+                dropdownColor: Colors.white,
+                borderRadius: BorderRadius.circular(14),
+                icon: Icon(
+                  Icons.keyboard_arrow_down_rounded,
+                  color: Colors.black87,
+                ),
                 items:
                     weightUnits.map((unit) {
-                      return DropdownMenuItem(value: unit, child: Text(unit));
+                      return DropdownMenuItem(
+                        value: unit,
+                        child: Text(unit, style: TextStyle(color: Colors.black)),
+                      );
                     }).toList(),
                 onChanged: (value) {
                   if (value != null) {
@@ -605,8 +742,20 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
                   }
                 },
                 decoration: InputDecoration(
-                  border: OutlineInputBorder(),
-                  hintText: "Unit",
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: Colors.grey[300]!),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: Colors.grey[300]!),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: Colors.black, width: 2),
+                  ),
+                  filled: true,
+                  fillColor: Colors.grey[50],
                 ),
               ),
             ),
@@ -615,18 +764,33 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
         SizedBox(height: 16),
 
         // Distance Section
-        Text("Distance", style: TextStyle(fontWeight: FontWeight.w600)),
+        Text(
+          "Distance",
+          style: TextStyle(
+            fontWeight: FontWeight.w600,
+            color: Colors.black,
+            fontSize: 15,
+          ),
+        ),
         SizedBox(height: 8),
         Container(
-          padding: EdgeInsets.all(12),
+          padding: EdgeInsets.all(16),
           decoration: BoxDecoration(
-            border: Border.all(color: Colors.grey.shade300),
-            borderRadius: BorderRadius.circular(8),
+            color: Colors.grey[50],
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.grey[300]!),
           ),
           child: Row(
             children: [
-              Icon(Icons.directions_car, color: Colors.blue),
-              SizedBox(width: 10),
+              Container(
+                padding: EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.black,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(Icons.directions_car, color: Colors.white, size: 20),
+              ),
+              SizedBox(width: 12),
               Expanded(
                 child:
                     _isCalculatingDistance
@@ -635,34 +799,65 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
                             SizedBox(
                               width: 20,
                               height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2),
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.black,
+                              ),
                             ),
                             SizedBox(width: 10),
-                            Text("Calculating distance..."),
+                            Text(
+                              "Calculating distance...",
+                              style: TextStyle(color: Colors.grey[600]),
+                            ),
                           ],
                         )
-                        : Text(
-                          _distanceKm != null
-                              ? "${_distanceKm!.toStringAsFixed(2)} km"
-                              : "Distance not available",
-                          style: TextStyle(fontSize: 16),
+                        : Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              _distanceKm != null
+                                  ? "${_distanceKm!.toStringAsFixed(2)} km"
+                                  : "Distance not available",
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.black,
+                              ),
+                            ),
+                            SizedBox(height: 4),
+                            Text(
+                              "Rate: ₹$vehicleRate/km",
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: Colors.grey[600],
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
                         ),
-              ),
-              Text(
-                "Rate: ₹$vehicleRate/km",
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Colors.green,
-                  fontWeight: FontWeight.w500,
-                ),
               ),
             ],
           ),
         ),
         SizedBox(height: 8),
-        Text(
-          "Note: Fare includes ₹100 base + (₹$vehicleRate × distance) + (weight × ₹5)",
-          style: TextStyle(fontSize: 12, color: Colors.grey),
+        Container(
+          padding: EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.grey[100],
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.info_outline, size: 16, color: Colors.grey[600]),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  "Fare includes ₹100 base + (₹$vehicleRate × distance) + (weight × ₹5)",
+                  style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                ),
+              ),
+            ],
+          ),
         ),
       ],
     );
@@ -701,63 +896,81 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Location Summary
+                // Location Summary - Updated
                 _buildLocationSummary(),
                 SizedBox(height: 20),
 
-                // Pricing Type Info Banner
+                // Pricing Type Info Banner - Updated
                 Container(
-                  padding: EdgeInsets.all(12),
+                  padding: EdgeInsets.all(16),
                   decoration: BoxDecoration(
-                    color:
-                        isPerHour ? Colors.orange.shade50 : Colors.blue.shade50,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                      color:
-                          isPerHour
-                              ? Colors.orange.shade200
-                              : Colors.blue.shade200,
+                    gradient: LinearGradient(
+                      colors: [Colors.grey[50]!, Colors.white],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
                     ),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.grey[300]!),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.grey.withOpacity(0.1),
+                        blurRadius: 8,
+                        offset: Offset(0, 2),
+                      ),
+                    ],
                   ),
                   child: Row(
                     children: [
-                      Icon(
-                        isPerHour ? Icons.access_time : Icons.directions_car,
-                        color: isPerHour ? Colors.orange : Colors.blue,
+                      Container(
+                        padding: EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: Colors.black,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Icon(
+                          isPerHour ? Icons.access_time : Icons.directions_car,
+                          color: Colors.white,
+                          size: 24,
+                        ),
                       ),
-                      SizedBox(width: 10),
+                      SizedBox(width: 16),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              isPerHour ? "PER HOUR VEHICLE" : "PER KM VEHICLE",
+                              vehicleName,
                               style: TextStyle(
                                 fontWeight: FontWeight.bold,
-                                fontSize: 14,
-                                color:
-                                    isPerHour
-                                        ? Colors.orange.shade800
-                                        : Colors.blue.shade800,
+                                fontSize: 16,
+                                color: Colors.black,
                               ),
                             ),
+                            SizedBox(height: 4),
                             Text(
                               isPerHour
-                                  ? "Charges based on time usage"
-                                  : "Charges based on distance and weight",
-                              style: TextStyle(fontSize: 12),
+                                  ? "Hourly based pricing"
+                                  : "Distance based pricing",
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: Colors.grey[600],
+                              ),
                             ),
                           ],
                         ),
                       ),
-                      Text(
-                        isPerHour ? "₹$vehicleRate/hour" : "₹$vehicleRate/km",
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          color:
-                              isPerHour
-                                  ? Colors.orange.shade800
-                                  : Colors.blue.shade800,
+                      Container(
+                        padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: Colors.grey[100],
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Text(
+                          isPerHour ? "₹$vehicleRate/hr" : "₹$vehicleRate/km",
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black,
+                          ),
                         ),
                       ),
                     ],
@@ -765,121 +978,256 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
                 ),
                 SizedBox(height: 16),
 
-                // Goods Name (Common for both)
+                // Goods Name
                 Text(
                   "Goods Name *",
-                  style: TextStyle(fontWeight: FontWeight.w600),
+                  style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    color: Colors.black,
+                    fontSize: 15,
+                  ),
                 ),
                 SizedBox(height: 8),
                 TextFormField(
+                  style: TextStyle(color: Colors.black),
                   decoration: InputDecoration(
                     hintText: "e.g., Electronics, Furniture, Boxes",
-                    border: OutlineInputBorder(),
+                    hintStyle: TextStyle(color: Colors.grey[400]),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(color: Colors.grey[300]!),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(color: Colors.grey[300]!),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(color: Colors.black, width: 2),
+                    ),
+                    filled: true,
+                    fillColor: Colors.grey[50],
                   ),
                   onChanged: (value) => setState(() => goodsName = value),
-                  validator:
-                      (value) => value?.isEmpty == true ? "Required" : null,
+                  validator: (value) {
+                    final name = value?.trim() ?? '';
+                    if (name.isEmpty) return "Required";
+                    if (name.length < 2) return "Enter valid goods name";
+                    return null;
+                  },
                 ),
                 SizedBox(height: 16),
 
                 // Conditional Input Fields
-                if (isPerHour)
-                  _buildHoursInput()
-                else
-                  _buildWeightAndDistanceInput(),
+                if (isPerHour) _buildHoursInput() else _buildWeightAndDistanceInput(),
 
                 SizedBox(height: 16),
 
-                // Payer Selection (Common for both)
+                // Payer Selection
                 Text(
                   "Who pays? *",
-                  style: TextStyle(fontWeight: FontWeight.w600),
+                  style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    color: Colors.black,
+                    fontSize: 15,
+                  ),
                 ),
                 SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: RadioListTile(
-                        title: Text("Recipient"),
-                        value: "recipient",
-                        groupValue: payer,
-                        onChanged: (value) {
-                          if (value != null) {
-                            setState(() => payer = value);
-                          }
-                        },
+                Container(
+                  decoration: BoxDecoration(
+                    color: Colors.grey[50],
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.grey[300]!),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: RadioListTile(
+                          title: Text(
+                            "Recipient",
+                            style: TextStyle(color: Colors.grey[800]),
+                          ),
+                          value: "recipient",
+                          groupValue: payer,
+                          activeColor: Colors.black,
+                          onChanged: (value) {
+                            if (value != null) {
+                              setState(() => payer = value);
+                            }
+                          },
+                        ),
                       ),
-                    ),
-                    Expanded(
-                      child: RadioListTile(
-                        title: Text("Sender (Me)"),
-                        value: "sender",
-                        groupValue: payer,
-                        onChanged: (value) {
-                          if (value != null) {
-                            setState(() => payer = value);
-                          }
-                        },
+                      Expanded(
+                        child: RadioListTile(
+                          title: Text(
+                            "Sender (Me)",
+                            style: TextStyle(color: Colors.grey[800]),
+                          ),
+                          value: "sender",
+                          groupValue: payer,
+                          activeColor: Colors.black,
+                          onChanged: (value) {
+                            if (value != null) {
+                              setState(() => payer = value);
+                            }
+                          },
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
                 SizedBox(height: 16),
 
-                // Payment Type (Common for both)
+                // Payment Type
                 Text(
                   "Payment Type *",
-                  style: TextStyle(fontWeight: FontWeight.w600),
+                  style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    color: Colors.black,
+                    fontSize: 15,
+                  ),
                 ),
                 SizedBox(height: 8),
                 DropdownButtonFormField<String>(
+                  isExpanded: true,
                   value: paymentType,
+                  style: TextStyle(color: Colors.black),
+                  dropdownColor: Colors.white,
+                  borderRadius: BorderRadius.circular(14),
+                  icon: Icon(
+                    Icons.keyboard_arrow_down_rounded,
+                    color: Colors.black87,
+                  ),
                   items: [
-                    DropdownMenuItem(value: "cash", child: Text("Cash")),
-                    DropdownMenuItem(value: "online", child: Text("Online")),
-                    DropdownMenuItem(value: "card", child: Text("Card")),
+                    DropdownMenuItem(
+                      value: "cash",
+                      child: Text("Cash", style: TextStyle(color: Colors.black)),
+                    ),
+                    DropdownMenuItem(
+                      value: "online",
+                      child: Text("Online", style: TextStyle(color: Colors.black)),
+                    ),
+                    DropdownMenuItem(
+                      value: "card",
+                      child: Text("Card", style: TextStyle(color: Colors.black)),
+                    ),
                   ],
                   onChanged: (value) {
                     if (value != null) {
                       setState(() => paymentType = value);
                     }
                   },
-                  decoration: InputDecoration(border: OutlineInputBorder()),
+                  decoration: InputDecoration(
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(color: Colors.grey[300]!),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(color: Colors.grey[300]!),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(color: Colors.black, width: 2),
+                    ),
+                    filled: true,
+                    fillColor: Colors.grey[50],
+                  ),
                 ),
                 SizedBox(height: 16),
 
-                // Receiver Details (Common for both)
+                // Receiver Details
                 Text(
                   "Receiver Details *",
-                  style: TextStyle(fontWeight: FontWeight.w600),
+                  style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    color: Colors.black,
+                    fontSize: 15,
+                  ),
                 ),
                 SizedBox(height: 8),
                 TextFormField(
+                  style: TextStyle(color: Colors.black),
                   decoration: InputDecoration(
                     hintText: "Receiver Name",
-                    border: OutlineInputBorder(),
+                    hintStyle: TextStyle(color: Colors.grey[400]),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(color: Colors.grey[300]!),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(color: Colors.grey[300]!),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(color: Colors.black, width: 2),
+                    ),
+                    filled: true,
+                    fillColor: Colors.grey[50],
                   ),
                   onChanged: (value) => setState(() => receiverName = value),
-                  validator:
-                      (value) => value?.isEmpty == true ? "Required" : null,
+                  validator: (value) => value?.isEmpty == true ? "Required" : null,
                 ),
                 SizedBox(height: 8),
                 TextFormField(
                   keyboardType: TextInputType.phone,
+                  style: TextStyle(color: Colors.black),
                   decoration: InputDecoration(
                     hintText: "Receiver Phone",
-                    border: OutlineInputBorder(),
+                    hintStyle: TextStyle(color: Colors.grey[400]),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(color: Colors.grey[300]!),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(color: Colors.grey[300]!),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(color: Colors.black, width: 2),
+                    ),
+                    filled: true,
+                    fillColor: Colors.grey[50],
                   ),
                   onChanged: (value) => setState(() => receiverPhone = value),
-                  validator:
-                      (value) => value?.isEmpty == true ? "Required" : null,
+                  validator: (value) {
+                    final phone = value?.trim() ?? '';
+                    if (phone.isEmpty) return "Required";
+                    if (phone.length < 8) return "Enter valid phone";
+                    return null;
+                  },
                 ),
                 SizedBox(height: 16),
 
-                // Package Images (Common for both)
-                Text(
-                  "Package Photos * (${pickedImages.length}/3)",
-                  style: TextStyle(fontWeight: FontWeight.w600),
+                // Package Images
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      "Package Photos",
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        color: Colors.black,
+                        fontSize: 15,
+                      ),
+                    ),
+                    Container(
+                      padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.grey[200],
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        "${pickedImages.length}/$_maxImageCount",
+                        style: TextStyle(
+                          color: Colors.grey[800],
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
                 SizedBox(height: 8),
                 if (pickedImages.isEmpty)
@@ -888,8 +1236,9 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
                     child: Container(
                       height: 150,
                       decoration: BoxDecoration(
-                        border: Border.all(color: Colors.blue, width: 2),
-                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.grey[300]!, width: 2),
+                        borderRadius: BorderRadius.circular(16),
+                        color: Colors.grey[50],
                       ),
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
@@ -897,7 +1246,7 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
                           Icon(
                             Icons.add_photo_alternate,
                             size: 50,
-                            color: Colors.blue,
+                            color: Colors.grey[400],
                           ),
                           SizedBox(height: 10),
                           Text(
@@ -905,13 +1254,16 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
                             style: TextStyle(
                               fontSize: 16,
                               fontWeight: FontWeight.w600,
-                              color: Colors.blue,
+                              color: Colors.grey[600],
                             ),
                           ),
                           SizedBox(height: 5),
                           Text(
                             "Tap to add from Camera or Gallery",
-                            style: TextStyle(fontSize: 12, color: Colors.grey),
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey[500],
+                            ),
                           ),
                         ],
                       ),
@@ -930,20 +1282,20 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
                         ),
                         itemCount:
                             pickedImages.length +
-                            (pickedImages.length < 3 ? 1 : 0),
+                            (pickedImages.length < _maxImageCount ? 1 : 0),
                         itemBuilder: (context, index) {
                           if (index < pickedImages.length) {
                             return Stack(
                               children: [
                                 Container(
                                   decoration: BoxDecoration(
-                                    borderRadius: BorderRadius.circular(8),
+                                    borderRadius: BorderRadius.circular(12),
                                     border: Border.all(
-                                      color: Colors.grey.shade300,
+                                      color: Colors.grey[300]!,
                                     ),
                                   ),
                                   child: ClipRRect(
-                                    borderRadius: BorderRadius.circular(8),
+                                    borderRadius: BorderRadius.circular(12),
                                     child: Image.file(
                                       pickedImages[index],
                                       fit: BoxFit.cover,
@@ -953,18 +1305,19 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
                                   ),
                                 ),
                                 Positioned(
-                                  top: 2,
-                                  right: 2,
+                                  top: 4,
+                                  right: 4,
                                   child: GestureDetector(
                                     onTap: () => _removeImage(index),
                                     child: Container(
+                                      padding: EdgeInsets.all(4),
                                       decoration: BoxDecoration(
-                                        color: Colors.black54,
+                                        color: Colors.black.withOpacity(0.7),
                                         shape: BoxShape.circle,
                                       ),
                                       child: Icon(
                                         Icons.close,
-                                        size: 18,
+                                        size: 14,
                                         color: Colors.white,
                                       ),
                                     ),
@@ -978,10 +1331,11 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
                               child: Container(
                                 decoration: BoxDecoration(
                                   border: Border.all(
-                                    color: Colors.blue,
+                                    color: Colors.grey[300]!,
                                     width: 2,
                                   ),
-                                  borderRadius: BorderRadius.circular(8),
+                                  borderRadius: BorderRadius.circular(12),
+                                  color: Colors.grey[50],
                                 ),
                                 child: Center(
                                   child: Column(
@@ -989,15 +1343,15 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
                                     children: [
                                       Icon(
                                         Icons.add,
-                                        color: Colors.blue,
+                                        color: Colors.grey[400],
                                         size: 30,
                                       ),
-                                      SizedBox(height: 5),
+                                      SizedBox(height: 4),
                                       Text(
-                                        "Add More",
+                                        "Add",
                                         style: TextStyle(
-                                          fontSize: 10,
-                                          color: Colors.blue,
+                                          fontSize: 11,
+                                          color: Colors.grey[500],
                                         ),
                                       ),
                                     ],
@@ -1016,18 +1370,22 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
                             onPressed: _showImageSourceDialog,
                             icon: Icon(
                               Icons.add_photo_alternate,
-                              color: Colors.blue,
+                              color: Colors.grey[600],
+                              size: 18,
                             ),
                             label: Text(
                               "Add More Photos",
-                              style: TextStyle(color: Colors.blue),
+                              style: TextStyle(color: Colors.grey[600]),
                             ),
                           ),
                         ],
                       ),
                       Text(
-                        "Minimum 1, Maximum 3 photos",
-                        style: TextStyle(fontSize: 12, color: Colors.grey),
+                        "Minimum 1, Maximum $_maxImageCount photos",
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey[500],
+                        ),
                       ),
                     ],
                   ),
@@ -1044,16 +1402,18 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
                     onPressed: isSubmitting ? null : _submitBooking,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.black,
-                      padding: EdgeInsets.symmetric(vertical: 16),
+                      foregroundColor: Colors.white,
+                      padding: EdgeInsets.symmetric(vertical: 18),
                       shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10),
+                        borderRadius: BorderRadius.circular(16),
                       ),
+                      elevation: 2,
                     ),
                     child:
                         isSubmitting
                             ? SizedBox(
-                              width: 20,
-                              height: 20,
+                              width: 24,
+                              height: 24,
                               child: CircularProgressIndicator(
                                 strokeWidth: 2,
                                 color: Colors.white,
@@ -1063,7 +1423,6 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
                               "Confirm Booking - ₹${_estimatedFare.toStringAsFixed(0)}",
                               style: TextStyle(
                                 fontSize: 16,
-                                color: Colors.white,
                                 fontWeight: FontWeight.w600,
                               ),
                             ),
@@ -1085,42 +1444,32 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
     return Container(
       padding: EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.blue.shade50,
-        borderRadius: BorderRadius.circular(12),
+        gradient: LinearGradient(
+          colors: [Colors.grey[50]!, Colors.white],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.grey[300]!),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.grey.withOpacity(0.1),
+            blurRadius: 8,
+            offset: Offset(0, 2),
+          ),
+        ],
       ),
       child: Column(
         children: [
           Row(
             children: [
-              Icon(Icons.schedule, color: Colors.blue),
-              SizedBox(width: 8),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      "Delivery Schedule",
-                      style: TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                    Text(
-                      "${DateFormat('dd MMM yyyy').format(selectedDate)} • "
-                      "${selectedTime?.format(context) ?? 'Now'}",
-                    ),
-                  ],
+              Container(
+                padding: EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.black,
+                  borderRadius: BorderRadius.circular(10),
                 ),
-              ),
-            ],
-          ),
-          Divider(height: 20),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Column(
-                children: [
-                  Icon(Icons.circle, color: Colors.red, size: 16),
-                  Container(width: 2, height: 40, color: Colors.grey),
-                  Icon(Icons.flag, color: Colors.green, size: 16),
-                ],
+                child: Icon(Icons.schedule, color: Colors.white, size: 18),
               ),
               SizedBox(width: 12),
               Expanded(
@@ -1128,23 +1477,106 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      "Pickup",
-                      style: TextStyle(fontSize: 12, color: Colors.grey),
+                      "Delivery Schedule",
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        color: Colors.grey[600],
+                        fontSize: 13,
+                      ),
                     ),
+                    SizedBox(height: 4),
                     Text(
-                      widget.pickupLocation,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
+                      "${DateFormat('dd MMM yyyy').format(selectedDate)} • "
+                      "${selectedTime?.format(context) ?? 'Now'}",
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        color: Colors.black,
+                        fontSize: 15,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: 16),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Column(
+                children: [
+                  Container(
+                    padding: EdgeInsets.all(4),
+                    decoration: BoxDecoration(
+                      color: Colors.red,
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(Icons.circle, color: Colors.white, size: 8),
+                  ),
+                  Container(
+                    width: 2,
+                    height: 40,
+                    color: Colors.grey[300],
+                  ),
+                  Container(
+                    padding: EdgeInsets.all(4),
+                    decoration: BoxDecoration(
+                      color: Colors.green,
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(Icons.flag, color: Colors.white, size: 8),
+                  ),
+                ],
+              ),
+              SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          "Pickup",
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey[500],
+                          ),
+                        ),
+                        SizedBox(height: 4),
+                        Text(
+                          widget.pickupLocation,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: Colors.black,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
                     ),
                     SizedBox(height: 16),
-                    Text(
-                      "Delivery",
-                      style: TextStyle(fontSize: 12, color: Colors.grey),
-                    ),
-                    Text(
-                      widget.deliveryLocation,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          "Delivery",
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey[500],
+                          ),
+                        ),
+                        SizedBox(height: 4),
+                        Text(
+                          widget.deliveryLocation,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: Colors.black,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
@@ -1161,21 +1593,29 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
     final isPerHour = pricingType == 'PER_HOUR';
     final vehicleRate = (widget.selectedVehicle.rate ?? 0.0).toDouble();
     final vehicleName = widget.selectedVehicle.name ?? 'Vehicle';
+    final hasApiFare = widget.fareEstimate != null;
 
     return Container(
       padding: EdgeInsets.all(16),
       decoration: BoxDecoration(
-        border: Border.all(color: Colors.grey.shade300),
-        borderRadius: BorderRadius.circular(12),
-        color: Colors.grey.shade50,
+        border: Border.all(color: Colors.grey[300]!),
+        borderRadius: BorderRadius.circular(16),
+        color: Colors.grey[50],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Icon(Icons.receipt_long, color: Colors.blue),
-              SizedBox(width: 8),
+              Container(
+                padding: EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.black,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(Icons.receipt_long, color: Colors.white, size: 18),
+              ),
+              SizedBox(width: 12),
               Text(
                 "Booking Summary",
                 style: TextStyle(
@@ -1186,17 +1626,23 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
               ),
             ],
           ),
-          SizedBox(height: 12),
+          SizedBox(height: 16),
 
           // Vehicle Information
           _buildSummaryRow(
             "Vehicle",
-            "$vehicleName (${isPerHour ? 'PER HOUR' : 'PER KM'})",
+            "$vehicleName (${isPerHour ? 'Hourly' : 'Distance'})",
           ),
           _buildSummaryRow(
             "Rate",
             isPerHour ? '₹$vehicleRate/hour' : '₹$vehicleRate/km',
           ),
+
+          if (hasApiFare)
+            _buildSummaryRow(
+              "API Estimate",
+              '₹${widget.fareEstimate!.estimatedFare}',
+            ),
 
           // Conditional Fields
           if (isPerHour && _hours != null)
@@ -1227,7 +1673,7 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
           ),
           _buildSummaryRow("Payment type", paymentType.toUpperCase()),
 
-          Divider(color: Colors.grey.shade300),
+          Divider(color: Colors.grey[300], height: 24),
 
           // Fare Breakdown
           Text(
@@ -1235,10 +1681,10 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
             style: TextStyle(
               fontWeight: FontWeight.bold,
               fontSize: 15,
-              color: Colors.black87,
+              color: Colors.black,
             ),
           ),
-          SizedBox(height: 10),
+          SizedBox(height: 12),
 
           _buildSummaryRow("Base Fare", "₹100"),
 
@@ -1264,13 +1710,34 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
               subText: "($goodsWeight $weightUnit × ₹5)",
             ),
 
-          Divider(color: Colors.grey.shade300),
+          Divider(color: Colors.grey[300], height: 24),
 
-          _buildSummaryRow(
-            "Total Estimated Fare",
-            "₹${_estimatedFare.toStringAsFixed(0)}",
-            isBold: true,
-            color: Colors.green.shade700,
+          Container(
+            padding: EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.grey[200],
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  "Total Estimated Fare",
+                  style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    color: Colors.grey[800],
+                  ),
+                ),
+                Text(
+                  "₹${_estimatedFare.toStringAsFixed(0)}",
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 18,
+                    color: Colors.black,
+                  ),
+                ),
+              ],
+            ),
           ),
 
           SizedBox(height: 8),
@@ -1278,7 +1745,7 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
             "*Final fare may vary based on actual distance and time",
             style: TextStyle(
               fontSize: 12,
-              color: Colors.grey,
+              color: Colors.grey[500],
               fontStyle: FontStyle.italic,
             ),
           ),
@@ -1295,50 +1762,47 @@ class _GoodsDetailsPageState extends State<GoodsDetailsPage> {
     Color? color,
   }) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Column(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Left Label
-              Expanded(
-                flex: 5,
-                child: Text(
-                  label,
-                  style: TextStyle(color: Colors.grey.shade700, fontSize: 14),
-                ),
+          Expanded(
+            flex: 4,
+            child: Text(
+              label,
+              style: TextStyle(
+                color: Colors.grey[600],
+                fontSize: 13,
               ),
-
-              // Right Value
-              Expanded(
-                flex: 4,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Text(
-                      value,
-                      style: TextStyle(
-                        fontWeight:
-                            isBold ? FontWeight.bold : FontWeight.normal,
-                        color: color ?? Colors.black,
-                        fontSize: isBold ? 15 : 14,
-                      ),
-                      textAlign: TextAlign.right,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          Expanded(
+            flex: 6,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(
+                  value,
+                  style: TextStyle(
+                    fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
+                    color: color ?? Colors.grey[800],
+                    fontSize: 13,
+                  ),
+                  textAlign: TextAlign.right,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                if (subText != null)
+                  Text(
+                    subText,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Colors.grey[500],
                     ),
-                    if (subText != null)
-                      Text(
-                        subText,
-                        style: TextStyle(fontSize: 11, color: Colors.grey),
-                        textAlign: TextAlign.right,
-                      ),
-                  ],
-                ),
-              ),
-            ],
+                    textAlign: TextAlign.right,
+                  ),
+              ],
+            ),
           ),
         ],
       ),

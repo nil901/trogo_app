@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:trogo_app/global/utils.dart';
+import 'package:trogo_app/localization/app_strings.dart';
 
 class ForgotPasswordScreen extends StatefulWidget {
   const ForgotPasswordScreen({super.key});
@@ -26,7 +27,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     if (email.isEmpty) {
       Utils().showTopSnackBar(
         context,
-        "Please enter your email address",
+        AppStrings.t('pleaseEnterEmailAddress'),
         Colors.red,
       );
       return;
@@ -35,7 +36,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     if (!RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$').hasMatch(email)) {
       Utils().showTopSnackBar(
         context,
-        "Please enter a valid email address",
+        AppStrings.t('pleaseEnterValidEmailAddress'),
         Colors.red,
       );
       return;
@@ -51,7 +52,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     // Show success message
     Utils().showTopSnackBar(
       context,
-      "Password reset link sent to $email",
+      "${AppStrings.t('passwordResetLinkSent')} $email",
       Colors.green,
     );
 
@@ -83,8 +84,8 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
         ),
         backgroundColor: Colors.white,
         elevation: 0,
-        title: const Text(
-          "Forgot Password",
+        title: Text(
+          AppStrings.t('forgotPassword'),
           style: TextStyle(
             color: Colors.black,
             fontSize: 20,
@@ -123,8 +124,8 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
               const SizedBox(height: 40),
 
               // ================= Title =================
-              const Text(
-                "Reset Password",
+              Text(
+                AppStrings.t('resetPassword'),
                 style: TextStyle(
                   fontSize: 28,
                   fontWeight: FontWeight.bold,
@@ -136,7 +137,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
 
               // ================= Description =================
               Text(
-                "Enter your email address and we'll send you a link to reset your password.",
+                AppStrings.t('resetPasswordDescription'),
                 style: TextStyle(
                   fontSize: 16,
                   color: Colors.grey.shade600,
@@ -151,7 +152,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    "EMAIL ADDRESS",
+                    AppStrings.t('emailAddress'),
                     style: TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
@@ -191,8 +192,8 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                               color: Colors.black,
                               fontSize: 16,
                             ),
-                            decoration: const InputDecoration(
-                              hintText: "Enter your registered email",
+                            decoration: InputDecoration(
+                              hintText: AppStrings.t('enterRegisteredEmail'),
                               hintStyle: TextStyle(color: Colors.grey),
                               border: InputBorder.none,
                             ),
@@ -230,8 +231,8 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                             color: Colors.white,
                           ),
                         )
-                      : const Text(
-                          "SEND RESET LINK",
+                      : Text(
+                          AppStrings.t('sendResetLink'),
                           style: TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.bold,
@@ -261,7 +262,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                     const SizedBox(width: 12),
                     Expanded(
                       child: Text(
-                        "Check your spam folder if you don't receive the email within a few minutes.",
+                        AppStrings.t('checkSpamFolder'),
                         style: TextStyle(
                           color: Colors.blue.shade800,
                           fontSize: 14,
@@ -280,7 +281,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                 child: Column(
                   children: [
                     Text(
-                      "Need help?",
+                      AppStrings.t('needHelp'),
                       style: TextStyle(
                         color: Colors.grey.shade600,
                         fontSize: 14,
@@ -292,7 +293,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                         // Navigate to help/support screen
                       },
                       child: Text(
-                        "Contact Support",
+                        AppStrings.t('contactSupport'),
                         style: TextStyle(
                           color: Colors.black,
                           fontSize: 15,

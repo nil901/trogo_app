@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:geocoding/geocoding.dart';
+import 'package:trogo_app/api_service/passenger_location_service.dart';
 import 'package:trogo_app/auth/profile_update_screen.dart';
 import 'package:trogo_app/main_bottom_nav.dart';
 import 'package:trogo_app/prefs/PreferencesKey.dart';
@@ -138,6 +139,11 @@ class _LocationPermissionScreenState extends State<LocationPermissionScreen>
       );
 
       await _persistSelectedLocation(selectedLocation);
+      await PassengerLocationService().syncPassengerLocation(
+        latitude: selectedLocation.latitude,
+        longitude: selectedLocation.longitude,
+        source: 'location_permission_current',
+      );
 
       // Store the current location with address
       setState(() {
@@ -677,6 +683,11 @@ class _LocationPermissionScreenState extends State<LocationPermissionScreen>
                   );
 
                   await _persistSelectedLocation(selectedLocation);
+                  await PassengerLocationService().syncPassengerLocation(
+                    latitude: selectedLocation.latitude,
+                    longitude: selectedLocation.longitude,
+                    source: 'location_permission_manual',
+                  );
 
                   setState(() {
                     _selectedLocation = selectedLocation;

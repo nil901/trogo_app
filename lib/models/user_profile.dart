@@ -1,4 +1,5 @@
 // lib/models/user_profile.dart
+
 class UserProfile {
   final String id;
   final String name;
@@ -8,6 +9,10 @@ class UserProfile {
   final String? profileImage;
   final Location? location;
   final DateTime createdAt;
+  final String? fcmToken;
+  final dynamic passwordHash;
+  final dynamic logoutAt;
+  final int pendingCancellationFee;
 
   UserProfile({
     required this.id,
@@ -18,18 +23,30 @@ class UserProfile {
     this.profileImage,
     this.location,
     required this.createdAt,
+    this.fcmToken,
+    this.passwordHash,
+    this.logoutAt,
+    this.pendingCancellationFee = 0,
   });
 
   factory UserProfile.fromJson(Map<String, dynamic> json) {
     return UserProfile(
-      id: json['_id'] ?? '',
-      name: json['name'] ?? '',
-      email: json['email'] ?? '',
-      mobile: json['mobile'] ?? '',
-      gender: json['gender'] ?? '',
-      profileImage: json['profileImage'],
+      id: json['_id']?.toString() ?? '',
+      name: json['name']?.toString() ?? '',
+      email: json['email']?.toString() ?? '',
+      mobile: json['mobile']?.toString() ?? '',
+      gender: json['gender']?.toString() ?? '',
+      profileImage: json['profileImage']?.toString(),
       location: json['location'] != null ? Location.fromJson(json['location']) : null,
-      createdAt: DateTime.parse(json['createdAt'] ?? DateTime.now().toIso8601String()),
+      createdAt: json['createdAt'] != null 
+          ? DateTime.parse(json['createdAt'].toString()) 
+          : DateTime.now(),
+      fcmToken: json['fcmToken']?.toString(),
+      passwordHash: json['passwordHash'],
+      logoutAt: json['logoutAt'],
+      pendingCancellationFee: json['pendingCancellationFee'] is int 
+          ? json['pendingCancellationFee'] 
+          : (json['pendingCancellationFee'] ?? 0),
     );
   }
 
@@ -43,6 +60,10 @@ class UserProfile {
       'profileImage': profileImage,
       'location': location?.toJson(),
       'createdAt': createdAt.toIso8601String(),
+      'fcmToken': fcmToken,
+      'passwordHash': passwordHash,
+      'logoutAt': logoutAt,
+      'pendingCancellationFee': pendingCancellationFee,
     };
   }
 }
@@ -57,9 +78,27 @@ class Location {
   });
 
   factory Location.fromJson(Map<String, dynamic> json) {
+    // Handle coordinates that might be integers or doubles
+    final coords = json['coordinates'];
+    List<double> doubleCoords = [];
+    
+    if (coords != null && coords is List) {
+      doubleCoords = coords.map((coord) {
+        if (coord is int) {
+          return coord.toDouble();
+        } else if (coord is double) {
+          return coord;
+        } else if (coord is num) {
+          return coord.toDouble();
+        } else {
+          return 0.0;
+        }
+      }).toList();
+    }
+    
     return Location(
-      type: json['type'] ?? 'Point',
-      coordinates: List<double>.from(json['coordinates'] ?? []),
+      type: json['type']?.toString() ?? 'Point',
+      coordinates: doubleCoords,
     );
   }
 
@@ -70,4 +109,3 @@ class Location {
     };
   }
 }
-

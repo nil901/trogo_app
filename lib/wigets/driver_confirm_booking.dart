@@ -79,7 +79,6 @@ class _DriverConnectingUIState extends State<DriverConnectingUI>
   Timer? _timer;
   String? _bookingId;
   Timer? _driverLocationTimer;
-  Timer? _demoTimer;
   Timer? _terminalStatusRedirectTimer;
   LatLng? _lastDriverLatLng;
 
@@ -1179,7 +1178,6 @@ class _DriverConnectingUIState extends State<DriverConnectingUI>
   void _cleanupTimers() {
     _timer?.cancel();
     _driverLocationTimer?.cancel();
-    _demoTimer?.cancel();
     _terminalStatusRedirectTimer?.cancel();
   }
 
@@ -1210,171 +1208,6 @@ class _DriverConnectingUIState extends State<DriverConnectingUI>
 
     _showErrorSnackBar('Ride was cancelled');
     widget.onRideCancelled?.call();
-  }
-
-  Future<void> _startDemoRideFlow() async {
-    if (widget.pickupLocation == null || widget.dropLocation == null) {
-      _showErrorSnackBar('Pickup and drop are required for demo mode');
-      return;
-    }
-
-    _cleanupTimers();
-    _bookingId = 'demo-booking';
-
-    setState(() {
-      _isConnecting = true;
-      _isSearchStarted = true;
-      _driverFound = false;
-      _isRideBooked = false;
-      _connectionTime = 0;
-      _driverInfo['name'] = 'Demo Driver';
-      _driverInfo['rating'] = 4.9;
-      _driverInfo['phone'] = '9999999999';
-      _driverInfo['carModel'] = 'Auto Rickshaw';
-      _driverInfo['carNumber'] = 'MH 15 DEMO';
-      _driverInfo['profileImage'] = '';
-      _driverOtp = '1234';
-    });
-
-    final pickup = LatLng(
-      widget.pickupLocation!.latitude,
-      widget.pickupLocation!.longitude,
-    );
-    final drop = LatLng(
-      widget.dropLocation!.latitude,
-      widget.dropLocation!.longitude,
-    );
-
-    final driverStart = LatLng(
-      pickup.latitude - 0.012,
-      pickup.longitude - 0.012,
-    );
-
-    _showSnackBar('Demo mode started');
-    final pickupPath = await _buildDemoRoute(driverStart, pickup);
-    final dropPath = await _buildDemoRoute(pickup, drop);
-
-    _simulateDriverPath(
-      path: pickupPath,
-      onStart: () {
-        setState(() {
-          _driverFound = true;
-          _isConnecting = false;
-        });
-      },
-      onTickLabel: 'Driver coming to pickup',
-      onCompleted: () {
-        _showSuccessSnackBar('Driver arrived at pickup');
-        _simulateDriverPath(
-          path: dropPath,
-          onStart: () {
-            _showSnackBar('Ride started');
-          },
-          onTickLabel: 'Trip in progress',
-          onCompleted: () {
-            _handleCompletedRideFlow();
-          },
-        );
-      },
-    );
-  }
-
-  Future<List<LatLng>> _buildDemoRoute(LatLng start, LatLng end) async {
-    try {
-      final result = await polylinePoints.getRouteBetweenCoordinates(
-        request: PolylineRequest(
-          origin: PointLatLng(start.latitude, start.longitude),
-          destination: PointLatLng(end.latitude, end.longitude),
-          mode: TravelMode.driving,
-        ),
-      );
-
-      if (result.points.isNotEmpty) {
-        return _densifyDemoPath(
-          result.points
-              .map((point) => LatLng(point.latitude, point.longitude))
-              .toList(),
-        );
-      }
-    } catch (_) {}
-
-    return _densifyDemoPath([start, end]);
-  }
-
-  List<LatLng> _densifyDemoPath(List<LatLng> path) {
-    if (path.length < 2) return path;
-
-    final smoothPath = <LatLng>[];
-    for (int i = 0; i < path.length - 1; i++) {
-      final current = path[i];
-      final next = path[i + 1];
-      smoothPath.add(current);
-
-      for (int j = 1; j <= 6; j++) {
-        final t = j / 7;
-        smoothPath.add(
-          LatLng(
-            current.latitude + (next.latitude - current.latitude) * t,
-            current.longitude + (next.longitude - current.longitude) * t,
-          ),
-        );
-      }
-    }
-
-    smoothPath.add(path.last);
-    return smoothPath;
-  }
-
-  void _simulateDriverPath({
-    required List<LatLng> path,
-    required VoidCallback onCompleted,
-    VoidCallback? onStart,
-    String? onTickLabel,
-  }) {
-    final demoPath = path.isEmpty ? <LatLng>[] : path;
-    if (demoPath.isEmpty) {
-      onCompleted();
-      return;
-    }
-
-    onStart?.call();
-    int step = 0;
-
-    _demoTimer?.cancel();
-    _demoTimer = Timer.periodic(const Duration(milliseconds: 1700), (timer) {
-      final currentPoint = demoPath[step];
-      final destination = demoPath.last;
-      final lat = currentPoint.latitude;
-      final lng = currentPoint.longitude;
-
-      if (widget.pickupLocation != null) {
-        final distance = _calculateDistance(
-          lat,
-          lng,
-          destination.latitude,
-          destination.longitude,
-        );
-        _driverInfo['distance'] = '${distance.toStringAsFixed(1)} km away';
-        _driverInfo['eta'] =
-            '${max(1, ((demoPath.length - step) / 2).ceil())} min';
-      }
-
-      _notifyParentAboutDriver(lat, lng, routePath: demoPath.sublist(step));
-
-      if (onTickLabel != null && mounted) {
-        setState(() {
-          _driverInfo['status'] = onTickLabel;
-        });
-      }
-
-      if (step >= demoPath.length - 1) {
-        timer.cancel();
-        onCompleted();
-        return;
-      }
-
-      step++;
-    });
   }
 
   @override
@@ -1715,18 +1548,20 @@ class _DriverConnectingUIState extends State<DriverConnectingUI>
 
   Widget _buildHeader() {
     final topSpacing = MediaQuery.of(context).padding.top > 24 ? 12.0 : 4.0;
+    final showBackButton = !_driverFound;
     return Padding(
       padding: EdgeInsets.only(top: topSpacing),
       child: Row(
         children: [
-          GestureDetector(
-            onTap: widget.onBack,
-            child: CircleAvatar(
-              backgroundColor: Colors.grey.shade200,
-              child: const Icon(Icons.arrow_back, color: Colors.black),
+          if (showBackButton)
+            GestureDetector(
+              onTap: widget.onBack,
+              child: CircleAvatar(
+                backgroundColor: Colors.grey.shade200,
+                child: const Icon(Icons.arrow_back, color: Colors.black),
+              ),
             ),
-          ),
-          const SizedBox(width: 12),
+          SizedBox(width: showBackButton ? 12 : 0),
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [

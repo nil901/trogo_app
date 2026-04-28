@@ -14,6 +14,15 @@ class UserProfileNotifier extends StateNotifier<AsyncValue<UserProfile?>> {
 
   Future<void> fetchProfile() async {
     final previousProfile = state.asData?.value;
+    final authToken = AppPreference().getString(PreferencesKey.authToken);
+    if (authToken.isEmpty) {
+      debugPrint('Skipping profile fetch because auth token is missing.');
+      if (previousProfile != null) {
+        state = AsyncValue.data(previousProfile);
+      }
+      return;
+    }
+
     if (previousProfile == null) {
       state = const AsyncValue.loading();
     }
@@ -64,4 +73,3 @@ class UserProfileNotifier extends StateNotifier<AsyncValue<UserProfile?>> {
     state = const AsyncValue.loading();
   }
 }
-

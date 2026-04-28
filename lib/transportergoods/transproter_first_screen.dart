@@ -73,6 +73,7 @@ class _TransportRideHomePageState extends ConsumerState<TransportRideHomePage> {
   double _displayedDriverBearing = 0.0;
   TransportCameraMode? _lastCameraMode;
   int? _lastCameraBucket;
+  List<LatLng> _activeDriverRoutePath = [];
 
   bool _driverMarkerAdded = false;
   Future<void> _loadDriverCarIcon() async {
@@ -595,6 +596,8 @@ class _TransportRideHomePageState extends ConsumerState<TransportRideHomePage> {
     _driverBearing = bearing;
     _driverOtp = otp;
     _showDriverOnMap = true;
+    _activeDriverRoutePath =
+        routePath == null ? <LatLng>[] : List<LatLng>.from(routePath);
 
     if (!_driverMarkerAdded) {
       _addDriverMarker(location, bearing);
@@ -718,9 +721,9 @@ class _TransportRideHomePageState extends ConsumerState<TransportRideHomePage> {
 
     // Single point ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ zoom in
     if (points.length == 1) {
-      controller.animateCamera(
+      await controller.animateCamera(
         CameraUpdate.newCameraPosition(
-          CameraPosition(target: points.first, zoom: 16),
+          CameraPosition(target: points.first, zoom: 16.5),
         ),
       );
       return;
@@ -779,9 +782,9 @@ class _TransportRideHomePageState extends ConsumerState<TransportRideHomePage> {
 
     // ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¹ Only one point ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ normal zoom
     if (points.length == 1) {
-      controller.animateCamera(
+      await controller.animateCamera(
         CameraUpdate.newCameraPosition(
-          CameraPosition(target: points.first, zoom: 16),
+          CameraPosition(target: points.first, zoom: 16.5),
         ),
       );
       return;
@@ -1058,9 +1061,10 @@ class _TransportRideHomePageState extends ConsumerState<TransportRideHomePage> {
     }
 
     await _zoomToFitAllPoints(
-      pickup: points.length > 0 ? points[0] : null,
+      pickup: points.isNotEmpty ? points[0] : null,
       drop: points.length > 1 ? points[1] : null,
       driver: points.length > 2 ? points[2] : null,
+      routePath: routePath,
     );
   }
 
@@ -1108,6 +1112,7 @@ class _TransportRideHomePageState extends ConsumerState<TransportRideHomePage> {
     LatLng? pickup,
     LatLng? drop,
     LatLng? driver,
+    List<LatLng>? routePath,
   }) async {
     final controller = await _mapController.future;
 
@@ -1116,14 +1121,17 @@ class _TransportRideHomePageState extends ConsumerState<TransportRideHomePage> {
     if (pickup != null) points.add(pickup);
     if (drop != null) points.add(drop);
     if (driver != null) points.add(driver);
+    if (routePath != null && routePath.isNotEmpty) {
+      points.addAll(routePath);
+    }
 
     if (points.isEmpty) return;
 
     // ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¤ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â«ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¤ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¥ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¤ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¤ 1 point ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ zoom in
     if (points.length == 1) {
-      controller.animateCamera(
+      await controller.animateCamera(
         CameraUpdate.newCameraPosition(
-          CameraPosition(target: points.first, zoom: 16),
+          CameraPosition(target: points.first, zoom: 16.5),
         ),
       );
       return;
@@ -1141,12 +1149,50 @@ class _TransportRideHomePageState extends ConsumerState<TransportRideHomePage> {
       east = east > p.longitude ? east : p.longitude;
     }
 
+    final center = LatLng((south + north) / 2, (west + east) / 2);
+    final latSpan = north - south;
+    final lngSpan = east - west;
+    final maxSpan = max(latSpan, lngSpan);
+
+    if (maxSpan <= 0.0008) {
+      await controller.animateCamera(
+        CameraUpdate.newCameraPosition(
+          CameraPosition(target: center, zoom: 17.8, tilt: 36),
+        ),
+      );
+      return;
+    }
+
+    if (maxSpan <= 0.0018) {
+      await controller.animateCamera(
+        CameraUpdate.newCameraPosition(
+          CameraPosition(target: center, zoom: 17.1, tilt: 30),
+        ),
+      );
+      return;
+    }
+
+    if (maxSpan <= 0.004) {
+      await controller.animateCamera(
+        CameraUpdate.newCameraPosition(
+          CameraPosition(target: center, zoom: 16.3, tilt: 18),
+        ),
+      );
+      return;
+    }
+
     final bounds = LatLngBounds(
-      southwest: LatLng(south, west),
-      northeast: LatLng(north, east),
+      southwest: LatLng(
+        south - max(latSpan * 0.18, 0.0007),
+        west - max(lngSpan * 0.18, 0.0007),
+      ),
+      northeast: LatLng(
+        north + max(latSpan * 0.18, 0.0007),
+        east + max(lngSpan * 0.18, 0.0007),
+      ),
     );
 
-    controller.animateCamera(CameraUpdate.newLatLngBounds(bounds, 110));
+    await controller.animateCamera(CameraUpdate.newLatLngBounds(bounds, 110));
   }
 
   @override
@@ -1192,7 +1238,15 @@ class _TransportRideHomePageState extends ConsumerState<TransportRideHomePage> {
                             widget.currentLocation!.longitude!,
                           )
                           : const LatLng(19.0760, 72.8777);
-                  _fitInitialTripView(defaultPosition);
+                  if (currentState == RideState.driverConnecting &&
+                      _driverLocation != null) {
+                    _fitMapToRide(
+                      routePath: _activeDriverRoutePath,
+                      force: true,
+                    );
+                  } else {
+                    _fitInitialTripView(defaultPosition);
+                  }
                 }
               },
               isFullScreen: true,
@@ -1446,6 +1500,7 @@ class _TransportRideHomePageState extends ConsumerState<TransportRideHomePage> {
       _driverMarker = null;
       _driverMarkerAdded = false;
       _driverLocation = null;
+      _activeDriverRoutePath = [];
       _driverInfo = null;
       _driverOtp = null;
     });

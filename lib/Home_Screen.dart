@@ -30,10 +30,12 @@ const _homeAccentGradient = [Color(0xFF111111), Color(0xFF2A2A2A)];
 class HomeScreen extends ConsumerStatefulWidget {
   final SelectedLocation selectedLocation;
   final ValueChanged<SelectedLocation>? onLocationUpdated;
+  final int refreshTrigger;
   const HomeScreen({
     super.key,
     required this.selectedLocation,
     this.onLocationUpdated,
+    this.refreshTrigger = 0,
   });
 
   @override
@@ -46,6 +48,36 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   late Animation<double> _fadeAnimation;
   late SelectedLocation _currentLocation;
   StreamSubscription<Position>? _positionStreamSubscription;
+  DateTime? _lastHomeRefreshAt;
+
+  Future<void> _refreshHomeDataIfNeeded({Duration minGap = const Duration(milliseconds: 800)}) async {
+    final now = DateTime.now();
+    final lastRefreshAt = _lastHomeRefreshAt;
+    if (lastRefreshAt != null && now.difference(lastRefreshAt) < minGap) {
+      debugPrint('Skipping duplicate home refresh.');
+      return;
+    }
+
+    _lastHomeRefreshAt = now;
+    await _refreshHomeData();
+  }
+
+  Future<void> _refreshHomeData() async {
+    final authToken = AppPreference().getString(PreferencesKey.authToken);
+    if (authToken.isEmpty) {
+      debugPrint('Skipping home data refresh because auth token is missing.');
+      return;
+    }
+
+    ref.invalidate(fetchAllCategoriesProvider);
+    ref.read(userProfileProvider.notifier).reset();
+    await ref.read(userProfileProvider.notifier).fetchProfile();
+    
+    await vehicletypesApi(ref, "passenger");
+    await passengerSummaryApi(ref);
+    await getBookingHistoryApi(ref);
+    await fetchRecentDrops(ref);
+  }
 
   // Updated method to navigate to RideBookScreen instead of RideHomePage
 Future<void> _openRideBook() async {
@@ -253,12 +285,34 @@ void _openRideBookWithLocation(RecentDropModel drop) {
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _animationController.forward();
-      vehicletypesApi(ref, "passenger");
-      ref.refresh(fetchAllCategoriesProvider);
-      ref.read(userProfileProvider.notifier).fetchProfile();
-      fetchRecentDrops(ref);
+      _refreshHomeDataIfNeeded();
       _fetchCurrentLocation();
       _startLocationUpdates();
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant HomeScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final locationChanged =
+        oldWidget.selectedLocation.latitude != widget.selectedLocation.latitude ||
+        oldWidget.selectedLocation.longitude !=
+            widget.selectedLocation.longitude ||
+        oldWidget.selectedLocation.address != widget.selectedLocation.address;
+    final shouldRefresh = oldWidget.refreshTrigger != widget.refreshTrigger;
+
+    if (locationChanged) {
+      setState(() {
+        _currentLocation = widget.selectedLocation;
+      });
+    }
+
+    if (!shouldRefresh) return;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _fetchCurrentLocation();
+      _refreshHomeDataIfNeeded();
     });
   }
 
@@ -274,7 +328,7 @@ void _openRideBookWithLocation(RecentDropModel drop) {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _fetchCurrentLocation();
-      fetchRecentDrops(ref);
+      _refreshHomeDataIfNeeded();
     }
   }
 

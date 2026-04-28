@@ -8,6 +8,8 @@ import 'package:flutter/services.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:flutter_polyline_points/flutter_polyline_points.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:trogo_app/api_service/api_service.dart';
+import 'package:trogo_app/api_service/urls.dart';
 import 'package:trogo_app/auth/login_notifier.dart';
 import 'package:trogo_app/location_permission_screen.dart';
 import 'package:trogo_app/main_bottom_nav.dart';
@@ -85,11 +87,17 @@ class _RideHomePageState extends ConsumerState<RideHomePage> {
   LatLng? _lastDriverRouteTarget;
   DateTime? _lastDriverRouteFetchAt;
   String? _lastDriverRouteId;
+  DateTime? _lastNearbyDriversFetchAt;
+  BitmapDescriptor? _nearbyCarIcon;
+  List<Map<String, dynamic>> _nearbyDrivers = [];
+  Set<Circle> _circles = {};
+  bool _isLoadingNearbyDrivers = false;
+  SelectedLocation? _pickupLocationOverride;
 
   double _bottomSheetHeight = 320;
 
   SelectedLocation? get _pickupLocation {
-    final location = widget.currentLocation;
+    final location = _pickupLocationOverride ?? widget.currentLocation;
     if (location == null) return null;
     if (!location.latitude.isFinite || !location.longitude.isFinite) {
       return null;
@@ -169,7 +177,11 @@ class _RideHomePageState extends ConsumerState<RideHomePage> {
 
   EdgeInsets get _mapViewportPadding {
     final extraBottom =
-        currentState == RideState.driverConnecting ? 420.0 : 340.0;
+        currentState == RideState.searchDestination
+            ? 360.0
+            : currentState == RideState.driverConnecting
+            ? 420.0
+            : 340.0;
     return EdgeInsets.fromLTRB(48, 120, 48, extraBottom);
   }
 
@@ -178,11 +190,215 @@ class _RideHomePageState extends ConsumerState<RideHomePage> {
       currentState = s;
     });
 
-    if (s == RideState.pickupDrop ||
+    if (s == RideState.searchDestination) {
+      _setupSearchPreviewMap();
+    } else if (s == RideState.pickupDrop ||
         s == RideState.chooseRide ||
         s == RideState.driverConnecting) {
       _setupMapAndRoute();
     }
+  }
+
+  Future<void> _loadNearbyCarIcon() async {
+    if (_nearbyCarIcon != null) return;
+
+    try {
+      const size = 40.0;
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder);
+      final center = const Offset(size / 2, size / 2);
+
+      final shadowPaint =
+          Paint()
+            ..color = Colors.black.withOpacity(0.10)
+            ..maskFilter = const ui.MaskFilter.blur(ui.BlurStyle.normal, 4);
+      canvas.drawCircle(center + const Offset(0, 4), 7, shadowPaint);
+
+      canvas.save();
+      canvas.translate(center.dx, center.dy);
+      canvas.rotate(-0.55);
+      canvas.translate(-center.dx, -center.dy);
+
+      final body = RRect.fromRectAndRadius(
+        Rect.fromCenter(center: center, width: 12, height: 22),
+        const Radius.circular(4),
+      );
+      canvas.drawRRect(body, Paint()..color = Colors.white);
+      canvas.drawRRect(
+        body,
+        Paint()
+          ..color = const Color(0xFF1F2937)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1,
+      );
+
+      final cabin = RRect.fromRectAndRadius(
+        Rect.fromCenter(center: center, width: 7, height: 9),
+        const Radius.circular(2),
+      );
+      canvas.drawRRect(cabin, Paint()..color = const Color(0xFF111827));
+
+      canvas.drawCircle(
+        center + const Offset(0, -9),
+        1.6,
+        Paint()..color = const Color(0xFFEF4444),
+      );
+      canvas.drawCircle(
+        center + const Offset(0, 9),
+        1.6,
+        Paint()..color = const Color(0xFFEF4444),
+      );
+
+      canvas.restore();
+
+      final picture = recorder.endRecording();
+      final image = await picture.toImage(size.toInt(), size.toInt());
+      final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+      if (bytes == null) {
+        throw Exception('Unable to create nearby car icon');
+      }
+
+      _nearbyCarIcon = BitmapDescriptor.bytes(bytes.buffer.asUint8List());
+    } catch (e) {
+      debugPrint('Nearby car icon load failed: $e');
+      _nearbyCarIcon = BitmapDescriptor.defaultMarkerWithHue(
+        BitmapDescriptor.hueOrange,
+      );
+    }
+  }
+
+  LatLng? _extractNearbyDriverLatLng(Map<String, dynamic> driver) {
+    final location = driver['location'];
+    if (location is! Map) return null;
+
+    final coordinates = location['coordinates'];
+    if (coordinates is! List || coordinates.length < 2) return null;
+
+    final lng = (coordinates[0] as num?)?.toDouble();
+    final lat = (coordinates[1] as num?)?.toDouble();
+    if (lat == null || lng == null) return null;
+    return LatLng(lat, lng);
+  }
+
+  void _syncNearbyDriverMarkers() {
+    _markers.removeWhere((m) => m.markerId.value.startsWith('nearby_driver_'));
+    _circles.removeWhere((c) => c.circleId.value.startsWith('nearby_'));
+
+    final pickupLocation = _pickupLocation;
+    if (pickupLocation == null) return;
+
+    if (currentState == RideState.searchDestination) {
+      final center = LatLng(pickupLocation.latitude, pickupLocation.longitude);
+      _circles.addAll({
+        Circle(
+          circleId: const CircleId('nearby_user_outer'),
+          center: center,
+          radius: 55,
+          fillColor: const Color(0x332563EB),
+          strokeColor: Colors.transparent,
+        ),
+        Circle(
+          circleId: const CircleId('nearby_user_inner'),
+          center: center,
+          radius: 18,
+          fillColor: const Color(0x662563EB),
+          strokeColor: const Color(0xFF2563EB),
+          strokeWidth: 2,
+        ),
+      });
+    }
+
+    if (currentState == RideState.driverConnecting) return;
+
+    for (final driver in _nearbyDrivers.take(6)) {
+      final id = driver['_id']?.toString();
+      final latLng = _extractNearbyDriverLatLng(driver);
+      if (id == null || latLng == null) continue;
+
+      _markers.add(
+        Marker(
+          markerId: MarkerId('nearby_driver_$id'),
+          position: latLng,
+          icon:
+              _nearbyCarIcon ??
+              BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueOrange),
+          anchor: const Offset(0.5, 0.5),
+          flat: true,
+          rotation: ((id.hashCode % 180) - 90).toDouble(),
+          zIndex: 2,
+          infoWindow: InfoWindow(title: driver['name']?.toString() ?? 'Driver'),
+        ),
+      );
+    }
+
+  }
+
+  Future<void> _fitMapToNearbyDriversPreview() async {
+    final pickupLocation = _pickupLocation;
+    if (pickupLocation == null) return;
+
+    final points = <LatLng>[
+      LatLng(pickupLocation.latitude, pickupLocation.longitude),
+      ..._nearbyDrivers
+          .map(_extractNearbyDriverLatLng)
+          .whereType<LatLng>()
+          .take(6),
+    ];
+
+    await _fitMapToPoints(points);
+  }
+
+  Future<void> _refreshNearbyDrivers({bool force = false}) async {
+    final pickupLocation = _pickupLocation;
+    if (pickupLocation == null || _isLoadingNearbyDrivers) return;
+
+    final lastFetch = _lastNearbyDriversFetchAt;
+    if (!force &&
+        lastFetch != null &&
+        DateTime.now().difference(lastFetch) < const Duration(seconds: 20)) {
+      _syncNearbyDriverMarkers();
+      if (mounted) {
+        setState(() {});
+      }
+      return;
+    }
+
+    _isLoadingNearbyDrivers = true;
+    await _loadNearbyCarIcon();
+    try {
+      final response = await ApiService().getRequest(nearbyDriversUrl);
+      final responseData = response?.data;
+      final rawDrivers = responseData is Map ? responseData['drivers'] : null;
+      if (rawDrivers is List) {
+        _nearbyDrivers =
+            rawDrivers
+                .whereType<Map>()
+                .map((driver) => Map<String, dynamic>.from(driver))
+                .toList();
+        _lastNearbyDriversFetchAt = DateTime.now();
+      }
+    } catch (e) {
+      debugPrint('Nearby drivers fetch failed: $e');
+    } finally {
+      _syncNearbyDriverMarkers();
+      if (mounted) {
+        setState(() {});
+      }
+      _isLoadingNearbyDrivers = false;
+    }
+  }
+
+  Future<void> _setupSearchPreviewMap() async {
+    final pickupLocation = _pickupLocation;
+    if (pickupLocation == null) return;
+
+    _markers.clear();
+    _polylines.clear();
+    _driverPolylines.clear();
+    _circles.clear();
+
+    await _refreshNearbyDrivers(force: true);
+    await _fitMapToNearbyDriversPreview();
   }
 
   Future<void> _openDestinationPicker(BuildContext context) async {
@@ -234,7 +450,7 @@ class _RideHomePageState extends ConsumerState<RideHomePage> {
           icon: BitmapDescriptor.defaultMarkerWithHue(
             BitmapDescriptor.hueGreen,
           ),
-          zIndex: 6,
+          zIndex: 9,
           infoWindow: const InfoWindow(title: 'Your Location'),
         ),
       );
@@ -244,7 +460,18 @@ class _RideHomePageState extends ConsumerState<RideHomePage> {
 
     // ===================== DROP MARKER =====================
     if (destLatitude != null && destLongitude != null) {
-      final dropLatLng = LatLng(destLatitude!, destLongitude!);
+      final rawDropLatLng = LatLng(destLatitude!, destLongitude!);
+      final pickupLatLng =
+          widget.currentLocation == null
+              ? null
+              : LatLng(
+                widget.currentLocation!.latitude,
+                widget.currentLocation!.longitude,
+              );
+      final dropLatLng =
+          pickupLatLng != null && _isNearlySamePoint(pickupLatLng, rawDropLatLng)
+              ? _offsetLatLng(rawDropLatLng)
+              : rawDropLatLng;
 
       _markers.add(
         Marker(
@@ -270,6 +497,8 @@ class _RideHomePageState extends ConsumerState<RideHomePage> {
       _markers.add(_driverMarker!);
       _driverMarkerAdded = true;
     }
+
+    await _refreshNearbyDrivers();
 
     if (_isMounted) {
       setState(() {});
@@ -310,6 +539,7 @@ Future<void> _fetchRoutePolyline() async {
             _polylines.addAll(
               _buildNavigationPolylines('route', _routeCoordinates),
             );
+            _syncRouteEndpointCircles('route', _routeCoordinates);
           });
         }
       } else {
@@ -340,18 +570,27 @@ Future<void> _fetchRoutePolyline() async {
     }
     await _loadDriverCarIcon();
 
+    final effectiveLocation = _stabilizeDriverLocation(location);
+
     _driverInfo = driverInfo;
-    _driverLocation = location;
+    _driverLocation = effectiveLocation;
     _driverBearing = bearing;
     _driverOtp = otp;
     _showDriverOnMap = true;
-    _syncRidePhase(location);
+    _syncRidePhase(effectiveLocation);
+
+    if (!_tripStarted) {
+      _polylines.removeWhere((p) => p.polylineId.value.startsWith('route'));
+      _circles.removeWhere(
+        (circle) => circle.circleId.value.startsWith('route_'),
+      );
+    }
 
     if (!_driverMarkerAdded) {
-      _addDriverMarker(location, bearing);
+      _addDriverMarker(effectiveLocation, bearing);
       _driverMarkerAdded = true;
     } else {
-      _animateDriverMarker(location, bearing);
+      _animateDriverMarker(effectiveLocation, bearing);
     }
 
     if (routePath != null && routePath.isNotEmpty) {
@@ -379,6 +618,24 @@ Future<void> _fetchRoutePolyline() async {
     final drop = LatLng(destLatitude!, destLongitude!);
     final distanceFromDrop = _distanceKm(location, drop);
     return distanceFromDrop <= _maxDriverDistanceKm;
+  }
+
+  LatLng _stabilizeDriverLocation(LatLng location) {
+    final pickup =
+        widget.currentLocation == null
+            ? null
+            : LatLng(
+              widget.currentLocation!.latitude,
+              widget.currentLocation!.longitude,
+            );
+    if (pickup == null) return location;
+
+    final pickupDistance = _distanceKm(location, pickup);
+    if (!_tripStarted && pickupDistance <= 0.08) {
+      return pickup;
+    }
+
+    return location;
   }
 
   void _syncRidePhase(LatLng driverLocation) {
@@ -442,6 +699,7 @@ Future<void> _fetchRoutePolyline() async {
         _driverPolylines
           ..clear()
           ..addAll(_buildNavigationPolylines(polylineId, points));
+        _syncRouteEndpointCircles(polylineId, points);
         _driverPolylineDrawn = true;
       });
     }
@@ -645,22 +903,23 @@ Future<void> _fetchRoutePolyline() async {
 
   Future<void> _drawDriverProgressPolyline() async {
     if (_driverLocation == null) return;
+    final pickup =
+        widget.currentLocation == null
+            ? null
+            : LatLng(
+              widget.currentLocation!.latitude,
+              widget.currentLocation!.longitude,
+            );
+    final drop =
+        (destLatitude != null && destLongitude != null)
+            ? LatLng(destLatitude!, destLongitude!)
+            : null;
 
-    final target =
-        _tripStarted
-            ? ((destLatitude != null && destLongitude != null)
-                ? LatLng(destLatitude!, destLongitude!)
-                : null)
-            : (widget.currentLocation == null
-                ? null
-                : LatLng(
-                  widget.currentLocation!.latitude,
-                  widget.currentLocation!.longitude,
-                ));
-
+    final shouldShowDropRoute = _tripStarted || (_driverReachedPickup && drop != null);
+    final target = shouldShowDropRoute ? drop : pickup;
     if (target == null) return;
 
-    final polylineId = _tripStarted ? 'driver_drop' : 'driver_pickup';
+    final polylineId = shouldShowDropRoute ? 'driver_drop' : 'driver_pickup';
     final origin = _driverLocation!;
 
     _setFallbackDriverPolyline(target, polylineId, origin: origin);
@@ -712,6 +971,7 @@ Future<void> _fetchRoutePolyline() async {
           _driverPolylines
             ..clear()
             ..addAll(_buildNavigationPolylines(polylineId, points));
+          _syncRouteEndpointCircles(polylineId, points);
           _driverPolylineDrawn = true;
         });
       }
@@ -760,12 +1020,16 @@ Future<void> _fetchRoutePolyline() async {
     if (_driverLocation == null) return false;
     if ((_lastDriverRouteId ?? '') != polylineId) return false;
 
+    final drop =
+        (destLatitude == null || destLongitude == null)
+            ? null
+            : LatLng(destLatitude!, destLongitude!);
+    final shouldShowDropRoute = _tripStarted || (_driverReachedPickup && drop != null);
+
     final driverDrift = _distanceKm(_driverLocation!, origin);
     final activeTarget =
-        _tripStarted
-            ? ((destLatitude != null && destLongitude != null)
-                ? LatLng(destLatitude!, destLongitude!)
-                : null)
+        shouldShowDropRoute
+            ? drop
             : (widget.currentLocation == null
                 ? null
                 : LatLng(
@@ -777,8 +1041,8 @@ Future<void> _fetchRoutePolyline() async {
 
     return driverDrift <= 0.03 &&
         _distanceKm(activeTarget, target) <= 0.03 &&
-        ((_tripStarted && polylineId == 'driver_drop') ||
-            (!_tripStarted && polylineId == 'driver_pickup'));
+        ((shouldShowDropRoute && polylineId == 'driver_drop') ||
+            (!shouldShowDropRoute && polylineId == 'driver_pickup'));
   }
 
   void _setFallbackDriverPolyline(
@@ -800,6 +1064,7 @@ Future<void> _fetchRoutePolyline() async {
             target,
           ]),
         );
+      _syncRouteEndpointCircles(polylineId, [start, target]);
       _driverPolylineDrawn = true;
     });
   }
@@ -850,7 +1115,11 @@ Future<void> _fetchRoutePolyline() async {
     // Initialize map
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_pickupLocation != null) {
-        _setupMapAndRoute();
+        if (currentState == RideState.searchDestination) {
+          _setupSearchPreviewMap();
+        } else {
+          _setupMapAndRoute();
+        }
       }
     });
   }
@@ -892,41 +1161,52 @@ Future<void> _fetchRoutePolyline() async {
       return;
     }
 
+    final pickup = LatLng(
+      widget.currentLocation!.latitude,
+      widget.currentLocation!.longitude,
+    );
+    final drop = LatLng(destLatitude!, destLongitude!);
+    final samePoint = _distanceKm(pickup, drop) <= 0.03;
+
     if (_isMounted) {
       setState(() {
         _polylines.removeWhere(
           (p) => p.polylineId.value.startsWith('route'),
         );
-        _polylines.addAll(
-          _buildNavigationPolylines('route', [
-            LatLng(
-              widget.currentLocation!.latitude,
-              widget.currentLocation!.longitude,
-            ),
-            LatLng(destLatitude!, destLongitude!),
-          ]),
-        );
+        final routePoints =
+            samePoint
+                ? <LatLng>[
+                  pickup,
+                  LatLng(pickup.latitude + 0.00018, pickup.longitude + 0.00010),
+                  LatLng(pickup.latitude + 0.00028, pickup.longitude - 0.00006),
+                  LatLng(pickup.latitude + 0.00010, pickup.longitude - 0.00018),
+                  drop,
+                ]
+                : <LatLng>[pickup, drop];
+        _polylines.addAll(_buildNavigationPolylines('route', routePoints));
+        _syncRouteEndpointCircles('route', routePoints);
       });
     }
+  }
+
+  bool _isNearlySamePoint(LatLng a, LatLng b, {double thresholdKm = 0.03}) {
+    return _distanceKm(a, b) <= thresholdKm;
+  }
+
+  LatLng _offsetLatLng(LatLng point, {double latOffset = 0.00012, double lngOffset = 0.00010}) {
+    return LatLng(point.latitude + latOffset, point.longitude + lngOffset);
   }
 
   Set<Polyline> _buildNavigationPolylines(String id, List<LatLng> points) {
     if (points.length < 2) return {};
 
-    final isDriverRoute = id.startsWith('driver_');
-    final casingColor =
-        isDriverRoute ? const Color(0xFFFFFFFF) : const Color(0x33000000);
-    final mainColor =
-        isDriverRoute ? const Color(0xFF16A34A) : const Color(0xFF4B5563);
-    final casingWidth = isDriverRoute ? 13 : 8;
-    final mainWidth = isDriverRoute ? 8 : 4;
-    final zIndex = isDriverRoute ? 20 : 5;
+    final zIndex = id.startsWith('driver_') ? 20 : 5;
 
     return {
       Polyline(
         polylineId: PolylineId('${id}_casing'),
-        color: casingColor,
-        width: casingWidth,
+        color: const Color(0x40FFFFFF),
+        width: 10,
         jointType: JointType.round,
         startCap: Cap.roundCap,
         endCap: Cap.roundCap,
@@ -936,8 +1216,8 @@ Future<void> _fetchRoutePolyline() async {
       ),
       Polyline(
         polylineId: PolylineId('${id}_main'),
-        color: mainColor,
-        width: mainWidth,
+        color: const Color(0xFF111111),
+        width: 5,
         jointType: JointType.round,
         startCap: Cap.roundCap,
         endCap: Cap.roundCap,
@@ -946,6 +1226,28 @@ Future<void> _fetchRoutePolyline() async {
         points: points,
       ),
     };
+  }
+
+  void _syncRouteEndpointCircles(String id, List<LatLng> points) {
+    _circles.removeWhere((circle) => circle.circleId.value.startsWith('${id}_'));
+    if (points.isEmpty) return;
+
+    final endpoints =
+        points.length == 1 ? <LatLng>[points.first] : <LatLng>[points.first, points.last];
+
+    for (int index = 0; index < endpoints.length; index++) {
+      _circles.add(
+        Circle(
+          circleId: CircleId('${id}_endpoint_$index'),
+          center: endpoints[index],
+          radius: 8,
+          fillColor: const Color(0x332563EB),
+          strokeColor: const Color(0xFF2563EB),
+          strokeWidth: 1,
+          zIndex: 12,
+        ),
+      );
+    }
   }
 
   List<LatLng> _rideVisiblePoints() {
@@ -1353,12 +1655,17 @@ Future<void> _fetchRoutePolyline() async {
             child: CommonGoogleMap(
               initialLatLng: initialPosition,
               markers: _markers,
+              circles: _circles,
               polylines: {
                 ..._polylines, // ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Âµ pickup ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¾ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ drop
                 ..._driverPolylines, // ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ driver ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¾ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ pickup
               },
               mapPadding: _mapViewportPadding,
               useDarkStyle: _useDarkRideMap,
+              useLightPreviewStyle:
+                  currentState == RideState.searchDestination,
+              trafficEnabled: currentState != RideState.searchDestination,
+              buildingsEnabled: currentState != RideState.searchDestination,
               onMapCreated: (controller) {
                 if (!_mapController.isCompleted) {
                   _mapController.complete(controller);
@@ -1381,10 +1688,38 @@ Future<void> _fetchRoutePolyline() async {
               right: 16,
               child: _buildDriverLiveBadge(),
             ),
+          if (currentState == RideState.searchDestination && _nearbyDrivers.isNotEmpty)
+            Positioned(
+              top: MediaQuery.of(context).padding.top + 16,
+              left: 20,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.94),
+                  borderRadius: BorderRadius.circular(24),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Colors.black12,
+                      blurRadius: 12,
+                      offset: Offset(0, 6),
+                    ),
+                  ],
+                ),
+                child: Text(
+                  '${_nearbyDrivers.length} drivers nearby',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF111827),
+                  ),
+                ),
+              ),
+            ),
           DraggableScrollableSheet(
             initialChildSize:
-                currentState == RideState.searchDestination ? 0.95 : 0.45,
-            minChildSize: 0.45,
+                currentState == RideState.searchDestination ? 0.38 : 0.45,
+            minChildSize:
+                currentState == RideState.searchDestination ? 0.34 : 0.45,
             maxChildSize: 1.0,
             expand: true,
             builder: (context, scrollController) {
@@ -1448,7 +1783,7 @@ Future<void> _fetchRoutePolyline() async {
 
       case RideState.pickupDrop:
         return PickupDropUI(
-          currentLocation: widget.currentLocation,
+          currentLocation: _pickupLocation,
           destinationLocation:
               (destLatitude != null && destLongitude != null)
                   ? SelectedLocation(
@@ -1459,6 +1794,32 @@ Future<void> _fetchRoutePolyline() async {
                   )
                   : null,
           onBack: () => goTo(RideState.searchDestination),
+          onPickupUpdated: (selectedData) {
+            final latitude =
+                selectedData['latitude'] is num
+                    ? (selectedData['latitude'] as num).toDouble()
+                    : double.tryParse(selectedData['latitude'].toString());
+            final longitude =
+                selectedData['longitude'] is num
+                    ? (selectedData['longitude'] as num).toDouble()
+                    : double.tryParse(selectedData['longitude'].toString());
+
+            if (latitude == null || longitude == null) {
+              return;
+            }
+
+            setState(() {
+              _pickupLocationOverride = SelectedLocation(
+                latitude: latitude,
+                longitude: longitude,
+                address:
+                    (selectedData['description'] ??
+                            selectedData['address'] ??
+                            selectedData['formatted_address'])
+                        ?.toString(),
+              );
+            });
+          },
           onDropoffUpdated: (selectedData) {
             setState(() {
               destinationName = selectedData['description']?.toString();
@@ -1526,6 +1887,23 @@ Future<void> _fetchRoutePolyline() async {
                   return;
                 }
 
+                final hasInvalidPickup =
+                    pickupLocation.latitude == 0.0 &&
+                    pickupLocation.longitude == 0.0;
+                final hasInvalidDrop =
+                    destinationLocation.latitude == 0.0 &&
+                    destinationLocation.longitude == 0.0;
+                if (hasInvalidPickup || hasInvalidDrop) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text(
+                        "Pickup or destination location is invalid. Please reselect it.",
+                      ),
+                    ),
+                  );
+                  return;
+                }
+
                 print('ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â Vehicle selected in RideHomePage:');
                 print('   Name: $selectedVehicleName');
                 print('   ID: $selectedVehicleId');
@@ -1536,30 +1914,29 @@ Future<void> _fetchRoutePolyline() async {
                   this.selectedVehicleId = selectedVehicleId;
                   this.price = selectedPrice;
                 });
-                
+                print("dfffffffffffffffffffffffffffff");
                 try {
                   isLoadingFare = true;
-                  final fares = await fareEstimateApi(
-                    ref: ref,
-                    category: widget.isGoodsTransport ? "goods" : "passenger",
-                    vehicleTypeId: selectedVehicleId!,
-                    pickupAddress: pickupLocation.address ?? "Pickup Location",
-                    pickupCoordinates: [
-                      pickupLocation.longitude,
-                      pickupLocation.latitude,
-                    ],
-                    dropAddress: destinationLocation.address ?? "Destination",
-                    dropCoordinates: [
-                      destinationLocation.longitude,
-                      destinationLocation.latitude,
-                    ],
-                  );
-                  
+                 final fares = await fareEstimateApi(
+  ref: ref,
+  category: widget.isGoodsTransport ? "goods" : "passenger",
+  vehicleTypeId: selectedVehicleId!,
+  pickupAddress: pickupLocation.address ?? "Pickup Location",
+  pickupCoordinates: [
+    pickupLocation.latitude,
+    pickupLocation.longitude,
+  ],
+  dropAddress: destinationLocation.address ?? "Destination",
+  dropCoordinates: [
+    destinationLocation.latitude,
+    destinationLocation.longitude,
+  ],
+);
                   if (fares.isNotEmpty) {
                     ref.read(fareEstimateProvider.notifier).state = fares;
                   }
                 } catch (e) {
-                  print('ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ Fare estimate error: $e');
+                  //print('ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ Fare estimate error: $e');
                   // Continue without fares
                 } finally {
                   isLoadingFare = false;
@@ -1812,7 +2189,7 @@ Future<void> _fetchRoutePolyline() async {
             Expanded(
               flex: 3,
               child: SearchDestinationUI(
-                currentLocation: widget.currentLocation,
+                currentLocation: _pickupLocation,
                 onSearchTap: () {
                   print('Opening map for pickup location');
                 },
@@ -1824,7 +2201,7 @@ Future<void> _fetchRoutePolyline() async {
                   goTo(RideState.pickupDrop);
                 },
                 mode: 'pickup',
-                initialValue: widget.currentLocation?.address,
+                initialValue: _pickupLocation?.address,
                 onDestinationSelected: (locationData) {
                   print(
                     'Pickup location selected from search: ${locationData['description']}',

@@ -13,6 +13,8 @@ import 'package:trogo_app/models/recent_drop_model.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:trogo_app/models/recent_drop_model.dart';
+import 'package:trogo_app/prefs/PreferencesKey.dart';
+import 'package:trogo_app/prefs/app_preference.dart';
 class RecentDropModel {
   final String id;
   final String userId;
@@ -69,6 +71,12 @@ final recentDropLoadingProvider = StateProvider<bool>((ref) {
 Future<void> fetchRecentDrops(WidgetRef ref) async {
   try {
     ref.read(recentDropLoadingProvider.notifier).state = true;
+    final authToken = AppPreference().getString(PreferencesKey.authToken);
+    if (authToken.isEmpty) {
+      debugPrint('Skipping recent drops fetch because auth token is missing.');
+      ref.read(recentDropProvider.notifier).state = [];
+      return;
+    }
     
     final response = await ApiService().getRequest(recentDropList);
     log("datrnhhhhhhhhhhhhhhhhhhhhhh${response?.data}");

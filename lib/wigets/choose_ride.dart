@@ -41,19 +41,93 @@ class _ChooseRideUIState extends ConsumerState<ChooseRideUI> {
   Timer? _loadingTimer;
   final ScrollController _scrollController = ScrollController();
 
+  bool _hasValidCoordinates(SelectedLocation? location) {
+    if (location == null) return false;
+    if (!location.latitude.isFinite || !location.longitude.isFinite) {
+      return false;
+    }
+    return !(location.latitude == 0.0 && location.longitude == 0.0);
+  }
+
   @override
   void initState() {
     super.initState();
     _printLocationDetails();
-    _startLoadingSimulation();
+    _fetchFareEstimates();
+  }
+
+  @override
+  void didUpdateWidget(covariant ChooseRideUI oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    final pickupChanged =
+        oldWidget.pickupLocation?.latitude != widget.pickupLocation?.latitude ||
+        oldWidget.pickupLocation?.longitude !=
+            widget.pickupLocation?.longitude ||
+        oldWidget.pickupLocation?.address != widget.pickupLocation?.address;
+    final dropChanged =
+        oldWidget.destinationLocation?.latitude !=
+            widget.destinationLocation?.latitude ||
+        oldWidget.destinationLocation?.longitude !=
+            widget.destinationLocation?.longitude ||
+        oldWidget.destinationLocation?.address !=
+            widget.destinationLocation?.address;
+
+    if (pickupChanged || dropChanged) {
+      _fetchFareEstimates();
+    }
+  }
+
+  Future<void> _fetchFareEstimates() async {
+    final pickup = widget.pickupLocation;
+    final drop = widget.destinationLocation;
+
+    _loadingTimer?.cancel();
+    if (mounted) {
+      setState(() {
+        _isLoadingFare = true;
+        selectedVehicleId = null;
+        selectedVehicleName = null;
+        price = null;
+      });
+    }
+
+    if (!_hasValidCoordinates(pickup) || !_hasValidCoordinates(drop)) {
+      if (mounted) {
+        setState(() {
+          _isLoadingFare = false;
+        });
+      }
+      return;
+    }
+
+    final validPickup = pickup!;
+    final validDrop = drop!;
+
+    try {
+      print("pickup lat: ${validPickup.latitude}, lng: ${validPickup.longitude}");
+      print("drop lat: ${validDrop.latitude}, lng: ${validDrop.longitude}");
+      print("pickup coords sent: ${[validPickup.latitude, validPickup.longitude]}");
+      print("drop coords sent: ${[validDrop.latitude, validDrop.longitude]}");
+      await fareEstimateApi(
+        category: (widget.isGoodsTransport ?? false) ? "goods" : "passenger",
+        ref: ref,
+        vehicleTypeId: '',
+        pickupAddress: validPickup.address ?? "Pickup Location",
+        pickupCoordinates: [validPickup.longitude, validPickup.latitude],
+        dropAddress: validDrop.address ?? "Destination",
+        dropCoordinates: [validDrop.longitude, validDrop.latitude],
+      );
+    } finally {
+      _startLoadingSimulation();
+    }
   }
 
   void _startLoadingSimulation() {
-    // 2 seconds नंतर loading stop करा
-    _loadingTimer = Timer(Duration(seconds: 2), () {
+    _loadingTimer?.cancel();
+    _loadingTimer = Timer(const Duration(milliseconds: 600), () {
       if (mounted) {
         setState(() {
-
           _isLoadingFare = false;
         });
       }
@@ -604,36 +678,12 @@ class _ChooseRideUIState extends ConsumerState<ChooseRideUI> {
             ),
             SizedBox(height: 20),
             ElevatedButton(
-              onPressed: () {
-                // Retry fare calculation
-                setState(() {
-                  _isLoadingFare = true;
-                  
-                });
-
-                   fareEstimateApi(
-                    category: (widget.isGoodsTransport ?? false) ? "goods" : "passenger",
-                  ref: ref,
-                  vehicleTypeId:
-                      selectedVehicleId.toString(), 
-                  pickupAddress:widget.pickupLocation?.address ?? "Pickup Location",
-                  pickupCoordinates: [
-                    widget.pickupLocation!.longitude,
-                    widget.pickupLocation!.latitude,
-                  ],
-                  dropAddress: widget.destinationLocation!.address ?? "Destination",
-                  dropCoordinates: [
-                    widget.destinationLocation!.longitude,
-                    widget.destinationLocation!.latitude,
-                  ],
-                );
-                _startLoadingSimulation();
-              },
+              onPressed: _fetchFareEstimates,
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.black,
                 padding: EdgeInsets.symmetric(horizontal: 20, vertical: 12),
               ),
-              child: Text('Retry'),
+              child: Text('Retry',style: TextStyle(color: Colors.white),),
             ),
           ],
         ),

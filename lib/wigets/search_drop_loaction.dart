@@ -262,6 +262,16 @@ class _SearchDestinationUIState
   }
 
   void _selectRecentLocation(Map<String, dynamic> location) {
+    final lat = location['latitude'];
+    final lng = location['longitude'];
+    final hasCoordinates = lat is num && lng is num;
+    final placeId = location['place_id']?.toString();
+
+    if (!hasCoordinates && placeId != null && placeId.isNotEmpty) {
+      _getPlaceDetails(placeId);
+      return;
+    }
+
     setState(() {
       _selectedDestination = location['description'];
       _selectedAddress = location['formatted_address'];
@@ -333,6 +343,13 @@ class _SearchDestinationUIState
 
   Future<void> _useCurrentLocation() async {
     if (_isFetchingCurrentLocation) return;
+
+    // Reuse the same current location object shown in the header so
+    // pickup/current and selected destination stay perfectly in sync.
+    if (widget.currentLocation != null) {
+      _applyCurrentLocation(widget.currentLocation!);
+      return;
+    }
 
     setState(() {
       _isFetchingCurrentLocation = true;

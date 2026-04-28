@@ -6,6 +6,7 @@ String loginEndPoint = '${baseUrl}auth/login';
 String requestOtpEndPoint = '${baseUrl}auth/request-otp';
 String verifyOtpEndPoint = '${baseUrl}auth/verify-otp';
 String fcmTokan = '${baseUrl}passenger/save-token';
+String passengerLocationUrl = '${baseUrl}passenger/location';
 String vehicletypes = '${baseUrl}passenger/vehicle-types?';
 String history = '${baseUrl}passenger/history';
 String banarUrl = '${baseUrl}passenger/banners';
@@ -23,6 +24,7 @@ String bookingsBaseUrl = '${baseUrl}bookings';
 String bookingCreateUrl = '$bookingsBaseUrl/bookings';
 String bookingCancelUrl = '$bookingsBaseUrl/cancel';
 String bookingCompleteAndRateUrl = '$bookingsBaseUrl/complete-and-rate';
+String nearbyDriversUrl = '$bookingsBaseUrl/nearby-drivers';
 String transporterGlobalStatusUrl = '${baseUrl}transporter/global-status';
 
 const String notificationList = '/notification';        // GET request - Fetch all notifications

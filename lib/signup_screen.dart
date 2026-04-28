@@ -57,7 +57,7 @@ class SignupScreen extends StatelessWidget {
                     ),
 
                     const SizedBox(height: 24),
-                    _field("Email", "demo@email.com", Icons.email_outlined),
+                    _field("Email", "name@email.com", Icons.email_outlined),
                     _field(
                       "Phone no",
                       "+00 000-0000-000",

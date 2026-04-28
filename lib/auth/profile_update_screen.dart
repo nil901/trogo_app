@@ -277,6 +277,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
+  final TextEditingController _confirmPasswordController =
+      TextEditingController();
   final TextEditingController _mobileController = TextEditingController();
   String _selectedGender = 'male';
   final List<String> _genders = ['male', 'female', 'other'];
@@ -292,6 +294,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _nameController.dispose();
     _emailController.dispose();
     _passwordController.dispose();
+    _confirmPasswordController.dispose();
     _mobileController.dispose();
     super.dispose();
   }
@@ -454,6 +457,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _mobileController.text = profile.mobile;
     _selectedGender = _normalizeGenderValue(profile.gender);
     _passwordController.text = ''; // Leave password empty
+    _confirmPasswordController.text = '';
 
     // Navigate to edit screen
     final updatedProfile = await Navigator.push(
@@ -464,6 +468,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               nameController: _nameController,
               emailController: _emailController,
               passwordController: _passwordController,
+              confirmPasswordController: _confirmPasswordController,
               mobileController: _mobileController,
               selectedGender: _selectedGender,
               genders: _genders,
@@ -504,6 +509,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Please fill all required fields'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    if (_passwordController.text.trim().isNotEmpty &&
+        _passwordController.text.trim() !=
+            _confirmPasswordController.text.trim()) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Password and confirm password do not match'),
           backgroundColor: Colors.red,
         ),
       );
@@ -715,6 +732,7 @@ class EditProfileScreen extends StatefulWidget {
   final TextEditingController nameController;
   final TextEditingController emailController;
   final TextEditingController passwordController;
+  final TextEditingController confirmPasswordController;
   final TextEditingController mobileController;
   final String selectedGender;
   final List<String> genders;
@@ -727,6 +745,7 @@ class EditProfileScreen extends StatefulWidget {
     required this.nameController,
     required this.emailController,
     required this.passwordController,
+    required this.confirmPasswordController,
     required this.mobileController,
     required this.selectedGender,
     required this.genders,
@@ -745,6 +764,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   File? _tempSelectedImage;
   String? _tempSelectedGender;
   bool _isUpdating = false;
+  bool _isPasswordObscured = true;
+  bool _isConfirmPasswordObscured = true;
 
   @override
   void initState() {
@@ -874,6 +895,18 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       return;
     }
 
+    if (widget.passwordController.text.trim().isNotEmpty &&
+        widget.passwordController.text.trim() !=
+            widget.confirmPasswordController.text.trim()) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Password and confirm password do not match'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
     setState(() {
       _isUpdating = true;
     });
@@ -974,6 +1007,31 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                   keyboardType: TextInputType.phone,
                 ),
                 const SizedBox(height: 16),
+                _buildTextField(
+                  controller: widget.passwordController,
+                  label: 'Password',
+                  icon: Icons.lock,
+                  isObscure: _isPasswordObscured,
+                  onToggleObscure: () {
+                    setState(() {
+                      _isPasswordObscured = !_isPasswordObscured;
+                    });
+                  },
+                ),
+                const SizedBox(height: 16),
+                _buildTextField(
+                  controller: widget.confirmPasswordController,
+                  label: 'Confirm Password',
+                  icon: Icons.lock_outline,
+                  isObscure: _isConfirmPasswordObscured,
+                  onToggleObscure: () {
+                    setState(() {
+                      _isConfirmPasswordObscured =
+                          !_isConfirmPasswordObscured;
+                    });
+                  },
+                ),
+                const SizedBox(height: 16),
                 _buildGenderDropdown(),
                 const SizedBox(height: 30),
                 _buildUpdateButton(),
@@ -992,6 +1050,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     required IconData icon,
     bool isRequired = false,
     bool isObscure = false,
+    VoidCallback? onToggleObscure,
     TextInputType keyboardType = TextInputType.text,
   }) {
     return TextFormField(
@@ -1001,6 +1060,16 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       decoration: InputDecoration(
         labelText: '$label${isRequired ? ' *' : ''}',
         prefixIcon: Icon(icon, color: Colors.black),
+        suffixIcon:
+            onToggleObscure == null
+                ? null
+                : IconButton(
+                  onPressed: onToggleObscure,
+                  icon: Icon(
+                    isObscure ? Icons.visibility_off : Icons.visibility,
+                    color: Colors.grey.shade700,
+                  ),
+                ),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
           borderSide: BorderSide(color: Colors.grey),

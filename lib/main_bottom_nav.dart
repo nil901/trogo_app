@@ -30,6 +30,7 @@ class MainBottomNav extends StatefulWidget {
 class _MainBottomNavState extends State<MainBottomNav>
     with WidgetsBindingObserver {
   int index = 0;
+  int _homeRefreshTrigger = 0;
   late SelectedLocation _selectedLocation;
   late List<Widget> pages;
   bool _checkedActiveRide = false;
@@ -52,6 +53,7 @@ class _MainBottomNavState extends State<MainBottomNav>
       HomeScreen(
         selectedLocation: _selectedLocation,
         onLocationUpdated: _handleLocationUpdated,
+        refreshTrigger: _homeRefreshTrigger,
       ),
       GoodsTransportPage(selectedLocation: _selectedLocation),
       MyRidesHistoryPage(selectedLocation: _selectedLocation),
@@ -270,7 +272,18 @@ class _MainBottomNavState extends State<MainBottomNav>
     return Expanded(
       child: InkWell(
         borderRadius: BorderRadius.circular(22),
-        onTap: () => setState(() => index = i),
+        onTap: () {
+          if (index == i) return;
+
+          setState(() {
+            final previousIndex = index;
+            index = i;
+            if (i == 0 && previousIndex != 0) {
+              _homeRefreshTrigger++;
+              _rebuildPages();
+            }
+          });
+        },
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 260),
           curve: Curves.easeOutCubic,

@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:trogo_app/api_service/passenger_location_service.dart';
 import 'package:trogo_app/location_permission_screen.dart';
 import 'package:trogo_app/wigets/search_drop_loaction.dart';
 
@@ -125,6 +126,12 @@ class _PickupDropUIState extends State<PickupDropUI> {
 
   double _toRadians(double degree) => degree * pi / 180;
 
+  double? _parseCoordinate(dynamic value) {
+    if (value is num) return value.toDouble();
+    if (value == null) return null;
+    return double.tryParse(value.toString());
+  }
+
   // @override
   // void didUpdateWidget(PickupDropUI oldWidget) {
   //   super.didUpdateWidget(oldWidget);
@@ -186,34 +193,39 @@ class _PickupDropUIState extends State<PickupDropUI> {
                     },
                     mode: 'pickup',
                     initialValue: _tempPickupLocation?.address,
-                    onDestinationSelected: (locationData) {
+                    onDestinationSelected: (locationData) async {
                       print('🎯 New pickup location selected:');
                       print('   Description: ${locationData['description']}');
                       print('   Address: ${locationData['address']}');
                       print('   Latitude: ${locationData['latitude']}');
                       print('   Longitude: ${locationData['longitude']}');
 
+                      final latitude = _parseCoordinate(locationData['latitude']);
+                      final longitude = _parseCoordinate(
+                        locationData['longitude'],
+                      );
+                      if (latitude == null || longitude == null) {
+                        print(
+                          'Ignoring pickup selection because coordinates are missing.',
+                        );
+                        return;
+                      }
+
                       setState(() {
                         _tempPickupLocation = SelectedLocation(
-                          latitude:
-                              locationData['latitude'] is double
-                                  ? locationData['latitude'] as double
-                                  : double.tryParse(
-                                        locationData['latitude'].toString(),
-                                      ) ??
-                                      0.0,
-                          longitude:
-                              locationData['longitude'] is double
-                                  ? locationData['longitude'] as double
-                                  : double.tryParse(
-                                        locationData['longitude'].toString(),
-                                      ) ??
-                                      0.0,
+                          latitude: latitude,
+                          longitude: longitude,
                           address:
                               locationData['description'] ??
                               locationData['address'],
                         );
                       });
+
+                      await PassengerLocationService().syncPassengerLocation(
+                        latitude: latitude,
+                        longitude: longitude,
+                        source: 'pickup_edit',
+                      );
 
                       // Call callback if provided
                       widget.onPickupUpdated?.call(locationData);
@@ -291,16 +303,17 @@ class _PickupDropUIState extends State<PickupDropUI> {
     print('   Latitude: ${locationData['latitude']}');
     print('   Longitude: ${locationData['longitude']}');
 
+    final latitude = _parseCoordinate(locationData['latitude']);
+    final longitude = _parseCoordinate(locationData['longitude']);
+    if (latitude == null || longitude == null) {
+      print('Ignoring dropoff selection because coordinates are missing.');
+      return;
+    }
+
     setState(() {
       _tempDropoffLocation = SelectedLocation(
-        latitude:
-            locationData['latitude'] is double
-                ? locationData['latitude'] as double
-                : double.tryParse(locationData['latitude'].toString()) ?? 0.0,
-        longitude:
-            locationData['longitude'] is double
-                ? locationData['longitude'] as double
-                : double.tryParse(locationData['longitude'].toString()) ?? 0.0,
+        latitude: latitude,
+        longitude: longitude,
         address: locationData['description'] ?? locationData['address'],
       );
     });

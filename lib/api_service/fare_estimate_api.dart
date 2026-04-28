@@ -1,5 +1,10 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../auth/login_notifier.dart' show fareEstimateProvider;
 import '../models/estimateurl_model.dart';
+import 'api_service.dart';
+import 'urls.dart';
 
 Future<List<FareEstimate>> fareEstimateApi({
   required WidgetRef ref,
@@ -10,32 +15,41 @@ Future<List<FareEstimate>> fareEstimateApi({
   required String dropAddress,
   required List<double> dropCoordinates,
 }) async {
-  // Mock implementation - replace with real API call later
-  await Future.delayed(const Duration(milliseconds: 1500));
+  try {
+    final body = <String, dynamic>{
+      "category": category,
+      "drop": {
+        "coordinates": dropCoordinates,
+      },
+    };
 
-  // Calculate mock distance
-  final double latDiff = dropCoordinates[0] - pickupCoordinates[0];
-  final double lngDiff = dropCoordinates[1] - pickupCoordinates[1];
-  final double distanceKm = (latDiff.abs() + lngDiff.abs()) * 111; // Rough km estimate
+    if (vehicleTypeId.trim().isNotEmpty) {
+      body["vehicleTypeId"] = vehicleTypeId.trim();
+    }
 
-  return [
-    FareEstimate(
-      vehicleTypeId: vehicleTypeId.isNotEmpty ? vehicleTypeId : 'sedan',
-      name: 'Sedan',
-      image: 'assets/images/sedan.png',
-      bestFor: 'Solo or couple',
-      distanceKm: distanceKm,
-      etaMinutes: (distanceKm * 3).round(),
-      estimatedFare: (distanceKm * 25).round().toInt(),
-    ),
-    FareEstimate(
-      vehicleTypeId: vehicleTypeId == 'suv' ? vehicleTypeId : 'suv',
-      name: 'SUV',
-      image: 'assets/images/suv.png',
-      bestFor: 'Family or luggage',
-      distanceKm: distanceKm,
-      etaMinutes: (distanceKm * 3.5).round(),
-      estimatedFare: (distanceKm * 35).round().toInt(),
-    ),
-  ];
+    debugPrint("STEP 4: API HIT");
+    debugPrint("fareEstimateApi URL: $fareEstimateUrl");
+    debugPrint("BODY: $body");
+
+    final response = await ApiService().postRequest(fareEstimateUrl, body);
+    debugPrint("fareEstimateApi status: ${response?.statusCode}");
+    debugPrint("RESPONSE: ${response?.data}");
+
+    if (response != null && response.statusCode == 200) {
+      final vehicles = response.data['vehicles'];
+      if (vehicles is List) {
+        final fares =
+            vehicles
+                .map((json) => FareEstimate.fromJson(json))
+                .toList();
+        ref.read(fareEstimateProvider.notifier).state = fares;
+        return fares;
+      }
+    }
+  } catch (e) {
+    debugPrint("fareEstimateApi exception: $e");
+  }
+
+  ref.read(fareEstimateProvider.notifier).state = [];
+  return [];
 }

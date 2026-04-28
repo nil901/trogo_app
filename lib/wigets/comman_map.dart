@@ -18,6 +18,22 @@ const String _darkMapStyle = '''
 ]
 ''';
 
+const String _lightPreviewMapStyle = '''
+[
+  {"elementType":"geometry","stylers":[{"color":"#f6f8fc"}]},
+  {"elementType":"labels.icon","stylers":[{"visibility":"off"}]},
+  {"elementType":"labels.text.fill","stylers":[{"color":"#aab4c3"}]},
+  {"elementType":"labels.text.stroke","stylers":[{"color":"#f6f8fc"}]},
+  {"featureType":"administrative","elementType":"geometry","stylers":[{"visibility":"off"}]},
+  {"featureType":"poi","stylers":[{"visibility":"off"}]},
+  {"featureType":"transit","stylers":[{"visibility":"off"}]},
+  {"featureType":"road","elementType":"geometry","stylers":[{"color":"#e9eef7"}]},
+  {"featureType":"road","elementType":"labels","stylers":[{"visibility":"off"}]},
+  {"featureType":"water","elementType":"geometry","stylers":[{"color":"#eef4ff"}]},
+  {"featureType":"water","elementType":"labels","stylers":[{"visibility":"off"}]}
+]
+''';
+
 class CommonGoogleMap extends StatelessWidget {
   final LatLng initialLatLng;
   final Set<Marker> markers;
@@ -33,6 +49,9 @@ class CommonGoogleMap extends StatelessWidget {
   final Map<String, dynamic>? driverInfo;
   final LatLng? driverLocation;
   final double driverBearing;
+  final bool useLightPreviewStyle;
+  final bool trafficEnabled;
+  final bool buildingsEnabled;
 
   const CommonGoogleMap({
     super.key,
@@ -50,6 +69,9 @@ class CommonGoogleMap extends StatelessWidget {
     this.driverInfo,
     this.driverLocation,
     this.driverBearing = 0.0,
+    this.useLightPreviewStyle = false,
+    this.trafficEnabled = true,
+    this.buildingsEnabled = true,
   });
 
   @override
@@ -62,6 +84,8 @@ class CommonGoogleMap extends StatelessWidget {
       onMapCreated: (controller) async {
         if (useDarkStyle) {
           await controller.setMapStyle(_darkMapStyle);
+        } else if (useLightPreviewStyle) {
+          await controller.setMapStyle(_lightPreviewMapStyle);
         }
         onMapCreated?.call(controller);
       },
@@ -80,8 +104,8 @@ class CommonGoogleMap extends StatelessWidget {
       compassEnabled: true,
       zoomControlsEnabled: false,
       mapType: MapType.normal,
-      buildingsEnabled: true,
-      trafficEnabled: true,
+      buildingsEnabled: buildingsEnabled,
+      trafficEnabled: trafficEnabled,
       tiltGesturesEnabled: true,
       rotateGesturesEnabled: true,
     );

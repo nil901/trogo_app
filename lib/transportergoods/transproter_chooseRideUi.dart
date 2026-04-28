@@ -1,9 +1,12 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:trogo_app/auth/login_notifier.dart';
 import 'package:trogo_app/location_permission_screen.dart';
+import 'package:trogo_app/models/estimateurl_model.dart';
 
 class ChooseRideUI extends ConsumerStatefulWidget {
   final VoidCallback onBack;
@@ -40,13 +43,44 @@ class _ChooseRideUIState extends ConsumerState<ChooseRideUI> {
   void initState() {
     super.initState();
     _printLocationDetails();
-    _startLoadingSimulation();
     _fetchFareEstimates();
   }
 
-  void _fetchFareEstimates() {
+  @override
+  void didUpdateWidget(covariant ChooseRideUI oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    final pickupChanged =
+        oldWidget.pickupLocation?.latitude != widget.pickupLocation?.latitude ||
+        oldWidget.pickupLocation?.longitude !=
+            widget.pickupLocation?.longitude ||
+        oldWidget.pickupLocation?.address != widget.pickupLocation?.address;
+    final dropChanged =
+        oldWidget.destinationLocation?.latitude !=
+            widget.destinationLocation?.latitude ||
+        oldWidget.destinationLocation?.longitude !=
+            widget.destinationLocation?.longitude ||
+        oldWidget.destinationLocation?.address !=
+            widget.destinationLocation?.address;
+
+    if (pickupChanged || dropChanged) {
+      _fetchFareEstimates();
+    }
+  }
+
+  Future<void> _fetchFareEstimates() async {
     final pickup = widget.pickupLocation;
     final drop = widget.destinationLocation;
+
+    _loadingTimer?.cancel();
+    if (mounted) {
+      setState(() {
+        _isLoadingFare = true;
+        selectedVehicleId = null;
+        selectedVehicleName = null;
+        price = null;
+      });
+    }
 
     if (pickup == null || drop == null) {
       if (mounted) {
@@ -57,23 +91,26 @@ class _ChooseRideUIState extends ConsumerState<ChooseRideUI> {
       return;
     }
 
-    fareEstimateApi(
-      category: widget.isGoodsTransport ? "goods" : "passenger",
-      ref: ref,
-      vehicleTypeId: selectedVehicleId ?? '',
-      pickupAddress: pickup.address.toString(),
-      pickupCoordinates: [pickup.longitude, pickup.latitude],
-      dropAddress: drop.address.toString(),
-      dropCoordinates: [drop.longitude, drop.latitude],
-    );
+    try {
+      await fareEstimateApi(
+        category: widget.isGoodsTransport ? "goods" : "passenger",
+        ref: ref,
+        vehicleTypeId: '',
+        pickupAddress: pickup.address.toString(),
+        pickupCoordinates: [pickup.longitude, pickup.latitude],
+        dropAddress: drop.address.toString(),
+        dropCoordinates: [drop.latitude, drop.longitude],
+      );
+    } finally {
+      _startLoadingSimulation();
+    }
   }
 
   void _startLoadingSimulation() {
-    // 2 seconds नंतर loading stop करा
-    _loadingTimer = Timer(const Duration(seconds: 2), () {
+    _loadingTimer?.cancel();
+    _loadingTimer = Timer(const Duration(milliseconds: 600), () {
       if (mounted) {
         setState(() {
-
           _isLoadingFare = false;
         });
       }
@@ -106,10 +143,64 @@ class _ChooseRideUIState extends ConsumerState<ChooseRideUI> {
     });
   }
 
+  double? _directTripDistanceKm() {
+    final pickup = widget.pickupLocation;
+    final drop = widget.destinationLocation;
+    if (pickup == null || drop == null) return null;
+
+    final meters = Geolocator.distanceBetween(
+      pickup.latitude,
+      pickup.longitude,
+      drop.latitude,
+      drop.longitude,
+    );
+    return meters / 1000;
+  }
+
+  bool _shouldNormalizeApiValues(FareEstimate fareEstimate) {
+    final directKm = _directTripDistanceKm();
+    if (directKm == null) {
+      return fareEstimate.distanceKm >= 1000 || fareEstimate.etaMinutes >= 5000;
+    }
+
+    final rawDistance = fareEstimate.distanceKm;
+    final scaledDistance = rawDistance / 1000;
+    final rawDifference = (rawDistance - directKm).abs();
+    final scaledDifference = (scaledDistance - directKm).abs();
+    final rawClearlyWrong =
+        rawDistance > math.max(50, directKm * 20) ||
+        fareEstimate.etaMinutes > 5000;
+    final scaledClearlyBetter =
+        scaledDifference < rawDifference &&
+        scaledDifference <= math.max(2, directKm * 3);
+
+    return rawClearlyWrong && scaledClearlyBetter;
+  }
+
+  double _displayDistanceKm(FareEstimate fareEstimate, bool normalizeValues) {
+    return normalizeValues ? fareEstimate.distanceKm / 1000 : fareEstimate.distanceKm;
+  }
+
+  int _displayEtaMinutes(FareEstimate fareEstimate, bool normalizeValues) {
+    final eta = normalizeValues
+        ? fareEstimate.etaMinutes / 1000
+        : fareEstimate.etaMinutes.toDouble();
+    return math.max(1, eta.round());
+  }
+
+  int _displayFare(FareEstimate fareEstimate, bool normalizeValues) {
+    final fare = normalizeValues
+        ? fareEstimate.estimatedFare / 1000
+        : fareEstimate.estimatedFare.toDouble();
+    return math.max(1, fare.round());
+  }
+
   @override
   Widget build(BuildContext context) {
     final fareEstimates = ref.watch(fareEstimateProvider);
     final topSpacing = MediaQuery.of(context).padding.top > 24 ? 12.0 : 4.0;
+    final shouldNormalizeValues =
+        fareEstimates.isNotEmpty && _shouldNormalizeApiValues(fareEstimates.first);
 
     // Check if we should show loading
     final bool showLoading = _isLoadingFare || widget.isLoading;
@@ -205,7 +296,7 @@ class _ChooseRideUIState extends ConsumerState<ChooseRideUI> {
                           ),
                           SizedBox(height: 4),
                           Text(
-                            "${fareEstimates.first.distanceKm?.toStringAsFixed(1) ?? '0.0'} km",
+                            "${_displayDistanceKm(fareEstimates.first, shouldNormalizeValues).toStringAsFixed(1)} km",
                             style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
                           ),
                         ],
@@ -219,7 +310,7 @@ class _ChooseRideUIState extends ConsumerState<ChooseRideUI> {
                           ),
                           SizedBox(height: 4),
                           Text(
-                            "${fareEstimates.first.etaMinutes ?? 0} min",
+                            "${_displayEtaMinutes(fareEstimates.first, shouldNormalizeValues)} min",
                             style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
                           ),
                         ],
@@ -238,17 +329,30 @@ class _ChooseRideUIState extends ConsumerState<ChooseRideUI> {
                   itemBuilder: (context, index) {
                     final fareEstimate = fareEstimates[index];
                     final isSelected = selectedVehicleId == fareEstimate.vehicleTypeId;
+                    final displayFare = _displayFare(
+                      fareEstimate,
+                      shouldNormalizeValues,
+                    );
+                    final displayDistance = _displayDistanceKm(
+                      fareEstimate,
+                      shouldNormalizeValues,
+                    );
+                    final displayEta = _displayEtaMinutes(
+                      fareEstimate,
+                      shouldNormalizeValues,
+                    );
+                    final displayFareText = '${String.fromCharCode(0x20B9)}$displayFare';
 
                     return GestureDetector(
                       onTap: () {
                         setState(() {
                           selectedVehicleId = fareEstimate.vehicleTypeId;
                           selectedVehicleName = fareEstimate.name;
-                          price = fareEstimate.estimatedFare;
+                          price = displayFare;
                         });
                         _scrollToSelectionButton();
-                        print('✅ Selected Vehicle: ${fareEstimate.name}');
-                        print('   Fare: ₹${fareEstimate.estimatedFare}');
+                        print('Selected Vehicle: ${fareEstimate.name}');
+                        print('   Fare: ${displayFareText}');
                       },
                       child: Container(
                         margin: EdgeInsets.only(bottom: 12),
@@ -333,14 +437,14 @@ class _ChooseRideUIState extends ConsumerState<ChooseRideUI> {
                                       Icon(Icons.speed, size: 12, color: Colors.grey[600]),
                                       SizedBox(width: 4),
                                       Text(
-                                        "${fareEstimate.distanceKm?.toStringAsFixed(1) ?? '0.0'} km",
+                                        "${displayDistance.toStringAsFixed(1)} km",
                                         style: TextStyle(fontSize: 10, color: Colors.grey[600]),
                                       ),
                                       SizedBox(width: 12),
                                       Icon(Icons.access_time, size: 12, color: Colors.grey[600]),
                                       SizedBox(width: 4),
                                       Text(
-                                        "${fareEstimate.etaMinutes ?? 0} min",
+                                        "$displayEta min",
                                         style: TextStyle(fontSize: 10, color: Colors.grey[600]),
                                       ),
                                     ],
@@ -354,7 +458,7 @@ class _ChooseRideUIState extends ConsumerState<ChooseRideUI> {
                               crossAxisAlignment: CrossAxisAlignment.end,
                               children: [
                                 Text(
-                                  "₹${fareEstimate.estimatedFare}",
+                                  displayFareText,
                                   style: TextStyle(
                                     fontSize: 16,
                                     fontWeight: FontWeight.bold,
@@ -576,13 +680,7 @@ class _ChooseRideUIState extends ConsumerState<ChooseRideUI> {
             ),
             SizedBox(height: 20),
             ElevatedButton(
-              onPressed: () {
-                setState(() {
-                  _isLoadingFare = true;
-                });
-                _fetchFareEstimates();
-                _startLoadingSimulation();
-              },
+              onPressed: _fetchFareEstimates,
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.black,
                 padding: EdgeInsets.symmetric(horizontal: 20, vertical: 12),

@@ -13,6 +13,8 @@ import 'package:trogo_app/prefs/app_preference.dart';
 // Model moved to lib/models/user_profile.dart - remove local copy
 
 class ProfileService {
+  static const Duration _requestTimeout = Duration(seconds: 12);
+
   Future<void> persistProfile(UserProfile profile) async {
     await AppPreference().setString(
       PreferencesKey.userName,
@@ -53,7 +55,7 @@ class ProfileService {
           'Authorization': 'Bearer $token',
           'Content-Type': 'application/json',
         },
-      );
+      ).timeout(_requestTimeout);
 
       print("⬅️ STATUS CODE => ${response.statusCode}");
       print("⬅️ RESPONSE => ${response.body}");
@@ -146,7 +148,7 @@ class ProfileService {
         );
       }
 
-      final response = await request.send();
+      final response = await request.send().timeout(_requestTimeout);
       final responseBody = await response.stream.bytesToString();
 
       print("📥 MULTIPART STATUS => ${response.statusCode}");

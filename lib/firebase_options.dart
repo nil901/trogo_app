@@ -52,7 +52,7 @@ class DefaultFirebaseOptions {
 
   static const FirebaseOptions android = FirebaseOptions(
     apiKey: 'AIzaSyD0iR0o1WW4YhWKx029xixZ5Tv2f8lAljo',
-    appId: '1:80169610465:android:cd91aee1573ff61ac3dba0',
+    appId: '1:80169610465:android:edae937b327bd54ac3dba0',
     messagingSenderId: '80169610465',
     projectId: 'trogo-61f6a',
     storageBucket: 'trogo-61f6a.firebasestorage.app',

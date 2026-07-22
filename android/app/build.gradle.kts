@@ -17,9 +17,9 @@ if (keystorePropertiesFile.exists()) {
 }
 
 android {
-    namespace = "com.trogo.app"
+    namespace = "com.trogos.app"
     compileSdk = 36
-    ndkVersion = flutter.ndkVersion
+    ndkVersion = "27.0.12077973"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
@@ -33,7 +33,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.trogo.app"
+        applicationId = "com.trogos.app"
         minSdk = 21
         targetSdk = 36
         versionCode = flutter.versionCode

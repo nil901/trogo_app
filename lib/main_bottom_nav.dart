@@ -12,6 +12,7 @@ import 'package:trogo_app/localization/app_strings.dart';
 import 'package:trogo_app/prefs/PreferencesKey.dart';
 import 'package:trogo_app/prefs/app_preference.dart';
 import 'package:trogo_app/rider_book_screen.dart';
+import 'package:trogo_app/services/ride_location_tracking_service.dart';
 import 'package:trogo_app/transportergoods/transproter_first_screen.dart';
 
 class MainBottomNav extends StatefulWidget {
@@ -29,6 +30,7 @@ class MainBottomNav extends StatefulWidget {
 
 class _MainBottomNavState extends State<MainBottomNav>
     with WidgetsBindingObserver {
+  static const String _trackingOwner = 'main_bottom_nav';
   int index = 0;
   int _homeRefreshTrigger = 0;
   late SelectedLocation _selectedLocation;
@@ -44,6 +46,7 @@ class _MainBottomNavState extends State<MainBottomNav>
     _rebuildPages();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _refreshSelectedLocation();
+      RideLocationTrackingService.instance.start(owner: _trackingOwner);
       _restoreActiveRideIfNeeded();
     });
   }
@@ -136,7 +139,15 @@ class _MainBottomNavState extends State<MainBottomNav>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _refreshSelectedLocation();
+      RideLocationTrackingService.instance.restart(owner: _trackingOwner);
     }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    RideLocationTrackingService.instance.stop(owner: _trackingOwner);
+    super.dispose();
   }
 
   Future<void> _restoreActiveRideIfNeeded() async {
@@ -144,11 +155,22 @@ class _MainBottomNavState extends State<MainBottomNav>
     _checkedActiveRide = true;
 
     final service = ActiveBookingService();
-    final activeBooking = await service.fetchActiveBooking(
-      allowCacheFallback: false,
-    );
-    final shouldBlockRideRestore =
-        await service.shouldBlockRideRestoreForTransporter();
+    Map<String, dynamic>? activeBooking;
+    bool shouldBlockRideRestore = false;
+
+    try {
+      activeBooking = await service
+          .fetchActiveBooking(
+            allowCacheFallback: false,
+          )
+          .timeout(const Duration(seconds: 12));
+      shouldBlockRideRestore = await service
+          .shouldBlockRideRestoreForTransporter()
+          .timeout(const Duration(seconds: 12));
+    } catch (error) {
+      debugPrint('Active ride restore skipped after timeout/error: $error');
+      return;
+    }
 
     if (!mounted ||
         shouldBlockRideRestore ||
@@ -327,9 +349,4 @@ class _MainBottomNavState extends State<MainBottomNav>
     );
   }
 
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    super.dispose();
-  }
 }

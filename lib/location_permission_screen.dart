@@ -19,6 +19,8 @@ class LocationPermissionScreen extends StatefulWidget {
 
 class _LocationPermissionScreenState extends State<LocationPermissionScreen>
     with SingleTickerProviderStateMixin {
+  static const Duration _locationTimeout = Duration(seconds: 10);
+  static const Duration _addressTimeout = Duration(seconds: 5);
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
   late Animation<double> _slideAnimation;
@@ -73,6 +75,7 @@ class _LocationPermissionScreenState extends State<LocationPermissionScreen>
       final permission = await Permission.location.status;
       
       if (permission.isGranted) {
+        _requestBackgroundLocationPermissionIfNeeded();
         setState(() => _currentStep = 2);
         await _fetchCurrentLocation();
       } else if (permission.isDenied) {
@@ -123,14 +126,14 @@ class _LocationPermissionScreenState extends State<LocationPermissionScreen>
 
       Position position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
-        timeLimit: const Duration(seconds: 10),
+        timeLimit: _locationTimeout,
       );
 
       // Get address from coordinates
       String address = await _getAddressFromLatLng(
         position.latitude,
         position.longitude,
-      );
+      ).timeout(_addressTimeout, onTimeout: () => 'Address not available');
 
       final selectedLocation = SelectedLocation(
         latitude: position.latitude,
@@ -139,11 +142,14 @@ class _LocationPermissionScreenState extends State<LocationPermissionScreen>
       );
 
       await _persistSelectedLocation(selectedLocation);
-      await PassengerLocationService().syncPassengerLocation(
-        latitude: selectedLocation.latitude,
-        longitude: selectedLocation.longitude,
-        source: 'location_permission_current',
-      );
+      PassengerLocationService()
+          .syncPassengerLocation(
+            latitude: selectedLocation.latitude,
+            longitude: selectedLocation.longitude,
+            source: 'location_permission_current',
+          )
+          .timeout(const Duration(seconds: 8))
+          .catchError((_) {});
 
       // Store the current location with address
       setState(() {
@@ -188,6 +194,7 @@ class _LocationPermissionScreenState extends State<LocationPermissionScreen>
       final permission = await Permission.location.request();
 
       if (permission.isGranted) {
+        _requestBackgroundLocationPermissionIfNeeded();
         setState(() => _currentStep = 2);
         await _fetchCurrentLocation();
       } else if (permission.isDenied) {
@@ -208,6 +215,17 @@ class _LocationPermissionScreenState extends State<LocationPermissionScreen>
         _isLoading = false;
       });
     }
+  }
+
+  Future<void> _requestBackgroundLocationPermissionIfNeeded() async {
+    try {
+      final status = await Permission.locationAlways.status;
+      if (status.isGranted || status.isPermanentlyDenied) {
+        return;
+      }
+
+      await Permission.locationAlways.request();
+    } catch (_) {}
   }
 
   Future<String> _getAddressFromLatLng(

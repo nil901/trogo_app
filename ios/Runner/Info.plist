@@ -45,8 +45,16 @@
 	<!-- enable background remote notifications -->
 	<key>UIBackgroundModes</key>
 	<array>
+		<string>location</string>
 		<string>remote-notification</string>
 	</array>
+
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Trogo uses your location to match rides and update live trip tracking.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Trogo needs background location during active rides so tracking continues when the screen is locked.</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>Trogo needs your location during active rides for reliable live tracking.</string>
 
 	<key>FirebaseAppDelegateProxyEnabled</key>
 	<true/>

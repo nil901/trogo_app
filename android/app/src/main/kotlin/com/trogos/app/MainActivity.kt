@@ -1,4 +1,4 @@
-package com.trogo.app
+package com.trogos.app
 
 import io.flutter.embedding.android.FlutterActivity
 

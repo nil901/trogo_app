@@ -13,6 +13,7 @@ import 'package:trogo_app/api_service/urls.dart';
 import 'package:trogo_app/auth/login_notifier.dart';
 import 'package:trogo_app/location_permission_screen.dart';
 import 'package:trogo_app/main_bottom_nav.dart';
+import 'package:trogo_app/services/ride_location_tracking_service.dart';
 import 'package:trogo_app/wigets/choose_ride.dart';
 import 'package:trogo_app/wigets/comman_map.dart';
 import 'package:trogo_app/wigets/driver_confirm_booking.dart';
@@ -55,6 +56,7 @@ class RideHomePage extends ConsumerStatefulWidget {
 }
 
 class _RideHomePageState extends ConsumerState<RideHomePage> {
+  static const String _trackingOwner = 'ride_home_page';
   static const double _maxDriverDistanceKm = 15.0;
 
   bool _isMounted = true;
@@ -1107,6 +1109,7 @@ Future<void> _fetchRoutePolyline() async {
   @override
   void initState() {
     super.initState();
+    RideLocationTrackingService.instance.start(owner: _trackingOwner);
     _driverPolylines = {};
     _bottomSheetHeight = 320;
     _hydrateActiveRide();
@@ -1583,6 +1586,7 @@ Future<void> _fetchRoutePolyline() async {
     _isMounted = false;
     _driverMarkerAnimationTimer?.cancel();
     _mapController.future.then((controller) => controller.dispose()).catchError((e) {});
+    RideLocationTrackingService.instance.stop(owner: _trackingOwner);
     super.dispose();
   }
 

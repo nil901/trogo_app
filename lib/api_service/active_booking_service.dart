@@ -1,11 +1,13 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:trogo_app/api_service/urls.dart';
 import 'package:trogo_app/prefs/PreferencesKey.dart';
 import 'package:trogo_app/prefs/app_preference.dart';
 
 class ActiveBookingService {
+  static const Duration _requestTimeout = Duration(seconds: 12);
   static const List<String> _restorableStatuses = [
     'requested',
     'accepted',
@@ -30,7 +32,7 @@ class ActiveBookingService {
           'Authorization': 'Bearer $token',
           'Content-Type': 'application/json',
         },
-      );
+      ).timeout(_requestTimeout);
 
       if (response.statusCode != 200) {
         await clearCachedActiveBooking();
@@ -63,7 +65,8 @@ class ActiveBookingService {
       final normalized = Map<String, dynamic>.from(booking);
       await cacheActiveBooking(normalized);
       return normalized;
-    } catch (_) {
+    } catch (error) {
+      debugPrint('Active booking fetch failed: $error');
       if (allowCacheFallback) {
         final cachedBooking = getCachedActiveBooking();
         final cachedStatus = cachedBooking?['status']?.toString().toLowerCase();
@@ -89,7 +92,7 @@ class ActiveBookingService {
           'Authorization': 'Bearer $token',
           'Content-Type': 'application/json',
         },
-      );
+      ).timeout(_requestTimeout);
       if (response.statusCode != 200) return false;
   
       final decoded = json.decode(response.body);
@@ -110,7 +113,8 @@ class ActiveBookingService {
       }
 
       return !_restorableStatuses.contains(bookingStatus);
-    } catch (_) {
+    } catch (error) {
+      debugPrint('Transporter global status check failed: $error');
       return false;
     }
   }
